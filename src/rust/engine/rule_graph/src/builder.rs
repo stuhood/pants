@@ -32,30 +32,10 @@ use std::collections::{hash_map, BTreeSet, HashMap, HashSet};
 use crate::rules::{DependencyKey, Rule};
 use crate::{
   entry_str, params_str, Diagnostic, Entry, EntryWithDeps, InnerEntry, ParamTypes, RootEntry,
-  RuleEdges, RuleGraph, UnfulfillableRuleMap, UnreachableError,
+  RuleEdges, RuleGraph, UnreachableError,
 };
 
-type RuleDependencyEdges<R> = HashMap<EntryWithDeps<R>, PolyRuleEdges<R>>;
-type ChosenDependency<'a, R> = (&'a <R as Rule>::DependencyKey, &'a Entry<R>);
-
-enum ConstructGraphResult<R: Rule> {
-  // The Entry was satisfiable without waiting for any additional nodes to be satisfied. The result
-  // contains copies of the input Entry for each set subset of the parameters that satisfy it.
-  Fulfilled(Vec<EntryWithDeps<R>>),
-  // The Entry was not satisfiable with installed rules.
-  Unfulfillable,
-  // The dependencies of an Entry might be satisfiable, but is currently blocked waiting for the
-  // results of the given entries.
-  //
-  // Holds partially-fulfilled Entries which do not yet contain their full set of used parameters.
-  // These entries are only consumed the case when a caller is the source of a cycle, and in that
-  // case they represent everything except the caller's own parameters (which provides enough
-  // information for the caller to complete).
-  CycledOn {
-    cyclic_deps: HashSet<EntryWithDeps<R>>,
-    partial_simplified_entries: Vec<EntryWithDeps<R>>,
-  },
-}
+type ChosenDependency<R> = (<R as Rule>::DependencyKey, Vec<Entry<R>>);
 
 ///
 /// A polymorphic form of crate::RuleEdges. Each dep has multiple possible implementation rules.
@@ -63,16 +43,6 @@ enum ConstructGraphResult<R: Rule> {
 #[derive(Eq, PartialEq, Clone, Debug)]
 struct PolyRuleEdges<R: Rule> {
   dependencies: HashMap<R::DependencyKey, Vec<Entry<R>>>,
-}
-
-impl<R: Rule> PolyRuleEdges<R> {
-  fn add_edge(&mut self, dependency_key: R::DependencyKey, new_dependency: Entry<R>) {
-    self
-      .dependencies
-      .entry(dependency_key)
-      .or_insert_with(Vec::new)
-      .push(new_dependency);
-  }
 }
 
 // TODO: We can't derive this due to https://github.com/rust-lang/rust/issues/26925, which
@@ -116,29 +86,28 @@ impl<'t, R: Rule> Builder<'t, R> {
   }
 
   pub fn full_graph(&self) -> RuleGraph<R> {
-    self.construct_graph(self.gen_root_entries(&self.tasks.keys().cloned().collect()))
+    let roots = self
+      .tasks
+      .keys()
+      .filter_map(|product_type| self.gen_root_entry(&self.root_param_types, *product_type))
+      .collect();
+    self.construct_graph(roots)
   }
 
   fn construct_graph(&self, roots: Vec<RootEntry<R>>) -> RuleGraph<R> {
-    let mut dependency_edges: RuleDependencyEdges<_> = HashMap::new();
-    let mut simplified_entries = HashMap::new();
-    let mut unfulfillable_rules: UnfulfillableRuleMap<_> = HashMap::new();
+    let mut unfulfillable_rules = HashMap::new();
 
     // First construct a polymorphic graph (where each dependency edge might have multiple
     // possible implementations).
-    for beginning_root in roots {
-      self.construct_graph_helper(
-        &mut dependency_edges,
-        &mut simplified_entries,
-        &mut unfulfillable_rules,
-        EntryWithDeps::Root(beginning_root),
-      );
-    }
+    let dependency_edges = Construct::new(&self.tasks, roots).transform(&mut unfulfillable_rules);
 
     // Then monomorphize it, turning it into a graph where each dependency edge has exactly one
     // possible implementation.
-    let rule_dependency_edges = Self::monomorphize_graph(dependency_edges);
+    let rule_dependency_edges =
+      Monomorphize::new(dependency_edges).transform(&mut unfulfillable_rules);
 
+    // Finally, compute which rules are unreachable/dead post-monomorphization (which will have
+    // chosen concrete implementations for each edge).
     let unreachable_rules = self.unreachable_rules(&rule_dependency_edges);
 
     RuleGraph {
@@ -198,155 +167,219 @@ impl<'t, R: Rule> Builder<'t, R> {
       .collect()
   }
 
-  ///
-  /// Computes whether the given candidate Entry is satisfiable, and if it is, returns a copy
-  /// of the Entry for each set of input parameters that will satisfy it. Once computed, the
-  /// simplified versions are memoized in all_simplified_entries.
-  ///
-  /// When a rule can be fulfilled it will end up stored in both the rule_dependency_edges and
-  /// all_simplified_entries. If it can't be fulfilled, it is added to `unfulfillable_rules`.
-  ///
-  fn construct_graph_helper(
+  fn gen_root_entry(
     &self,
-    rule_dependency_edges: &mut RuleDependencyEdges<R>,
-    all_simplified_entries: &mut HashMap<EntryWithDeps<R>, Vec<EntryWithDeps<R>>>,
-    unfulfillable_rules: &mut UnfulfillableRuleMap<R>,
-    entry: EntryWithDeps<R>,
-  ) -> ConstructGraphResult<R> {
-    if let Some(simplified) = all_simplified_entries.get(&entry) {
-      // A simplified equivalent entry has already been computed, return it.
-      return ConstructGraphResult::Fulfilled(simplified.clone());
-    } else if unfulfillable_rules.get(&entry).is_some() {
-      // The rule is unfulfillable.
-      return ConstructGraphResult::Unfulfillable;
+    param_types: &ParamTypes<R::TypeId>,
+    product_type: R::TypeId,
+  ) -> Option<RootEntry<R>> {
+    let candidates = rhs(&self.tasks, param_types, product_type);
+    if candidates.is_empty() {
+      None
+    } else {
+      Some(RootEntry {
+        params: param_types.clone(),
+        dependency_key: R::DependencyKey::new_root(product_type),
+      })
+    }
+  }
+}
+
+///
+/// Select rules or parameters that can provide the given product type with the given parameters.
+///
+fn rhs<R: Rule>(
+  tasks: &HashMap<R::TypeId, Vec<R>>,
+  params: &ParamTypes<R::TypeId>,
+  product_type: R::TypeId,
+) -> Vec<Entry<R>> {
+  let mut entries = Vec::new();
+  // If the params can provide the type directly, add that.
+  if let Some(type_id) = params.get(&product_type) {
+    entries.push(Entry::Param(*type_id));
+  }
+  // If there are any rules which can produce the desired type, add them.
+  if let Some(matching_rules) = tasks.get(&product_type) {
+    entries.extend(matching_rules.iter().map(|rule| {
+      Entry::WithDeps(EntryWithDeps::Inner(InnerEntry {
+        params: params.clone(),
+        rule: rule.clone(),
+      }))
+    }));
+  }
+  entries
+}
+
+enum GraphTransformResult<Node> {
+  // The node was satisfiable without waiting for any additional nodes to be satisfied. The result
+  // contains simplified copies of the input node.
+  Fulfilled(Vec<Node>),
+  // The node was not satisfiable.
+  Unfulfillable,
+  // The dependencies of a node might be satisfiable, but it is currently blocked waiting for the
+  // results of the given other nodes.
+  //
+  // Holds partially-fulfilled Entries which do not yet contain their full set of used parameters.
+  // These entries are only consumed the case when a caller is the source of a cycle, and in that
+  // case they represent everything except the caller's own parameters (which provides enough
+  // information for the caller to complete).
+  CycledOn {
+    cyclic_deps: HashSet<Node>,
+    simplified_nodes: Vec<Node>,
+  },
+}
+
+trait GraphTransform<R: Rule> {
+  type OutputEdges: Clone + Default;
+
+  ///
+  /// Given a polymorphic graph, where each Rule might have multiple implementations of each dep,
+  /// monomorphize it into a graph where each Rule has exactly one implementation per dep.
+  ///
+  fn transform(
+    &self,
+    unfulfillable_nodes: &mut HashMap<EntryWithDeps<R>, Vec<Diagnostic<R::TypeId>>>,
+  ) -> HashMap<EntryWithDeps<R>, Self::OutputEdges> {
+    let mut output_graph = HashMap::new();
+    let mut memoized_outputs = HashMap::new();
+    for node in self.roots() {
+      self.transform_graph_helper(
+        &node,
+        &mut output_graph,
+        &mut memoized_outputs,
+        unfulfillable_nodes,
+      );
+    }
+    output_graph
+  }
+
+  fn roots<'a>(&'a self) -> Box<dyn Iterator<Item = EntryWithDeps<R>> + 'a>;
+
+  fn edges_for(&self, node: &EntryWithDeps<R>) -> Vec<(R::DependencyKey, Vec<Entry<R>>)>;
+
+  #[allow(clippy::type_complexity)]
+  fn select_edges_for(
+    &self,
+    node: &EntryWithDeps<R>,
+    candidates_by_key: HashMap<R::DependencyKey, Vec<Entry<R>>>,
+  ) -> (
+    HashMap<EntryWithDeps<R>, Self::OutputEdges>,
+    Vec<Diagnostic<R::TypeId>>,
+  );
+
+  fn unsatisfiable_dependency(
+    node: &EntryWithDeps<R>,
+    edge: &R::DependencyKey,
+  ) -> Diagnostic<R::TypeId>;
+
+  ///
+  /// Computes whether the given node is satisfiable, and if it is, returns a copy of the node for
+  /// each set of input parameters that will satisfy it. Once computed, the simplified versions are
+  /// memoized in memoized_outputs.
+  ///
+  /// When a node can be fulfilled it will end up stored in both the output_graph and
+  /// memoized_outputs. If it can't be fulfilled, it is added to unfulfillable_nodes.
+  ///
+  fn transform_graph_helper(
+    &self,
+    node: &EntryWithDeps<R>,
+    output_graph: &mut HashMap<EntryWithDeps<R>, Self::OutputEdges>,
+    memoized_outputs: &mut HashMap<EntryWithDeps<R>, Vec<EntryWithDeps<R>>>,
+    unfulfillable_nodes: &mut HashMap<EntryWithDeps<R>, Vec<Diagnostic<R::TypeId>>>,
+  ) -> GraphTransformResult<EntryWithDeps<R>> {
+    if let Some(simplified) = memoized_outputs.get(&node) {
+      // The monomorphized entries have already been computed, return them.
+      return GraphTransformResult::Fulfilled(simplified.clone());
+    } else if unfulfillable_nodes.get(&node).is_some() {
+      // The node is unfulfillable.
+      return GraphTransformResult::Unfulfillable;
     }
 
-    // Otherwise, store a placeholder in the rule_dependency_edges map and then visit its
-    // children.
+    // Otherwise, store a placeholder in the output_graph map and then visit its children.
     //
-    // This prevents infinite recursion by shortcircuiting when an entry recursively depends on
-    // itself. It's totally fine for rules to be recursive: the recursive path just never
-    // contributes to whether the rule is satisfiable.
-    match rule_dependency_edges.entry(entry.clone()) {
+    // This prevents infinite recursion by shortcircuiting when an node recursively depends on
+    // itself. It's totally fine for nodes to be recursive: the recursive path just never
+    // contributes to whether the node is satisfiable.
+    match output_graph.entry(node.clone()) {
       hash_map::Entry::Vacant(re) => {
-        // When a rule has not been visited before, we start the visit by storing a placeholder in
-        // the rule dependencies map in order to detect rule cycles.
-        re.insert(PolyRuleEdges::default());
+        // When a node has not been visited before, we start the visit by storing a placeholder in
+        // the node dependencies map in order to detect node cycles.
+        re.insert(Self::OutputEdges::default());
       }
       hash_map::Entry::Occupied(_) => {
-        // We're currently recursively under this rule, but its simplified equivalence has not yet
+        // We're currently recursively under this node, but its simplified equivalence has not yet
         // been computed (or we would have returned it above). The cyclic parent(s) will complete
         // before recursing to compute this node again.
         let mut cyclic_deps = HashSet::new();
-        let simplified = entry.simplified(BTreeSet::new());
-        cyclic_deps.insert(entry);
-        return ConstructGraphResult::CycledOn {
+        cyclic_deps.insert(node.clone());
+        return GraphTransformResult::CycledOn {
           cyclic_deps,
-          partial_simplified_entries: vec![simplified],
+          simplified_nodes: vec![node.simplified(BTreeSet::new())],
         };
       }
     };
 
-    // For each dependency of the rule, recurse for each potential match and collect RuleEdges and
+    // For each dependency of the node, recurse for each potential match and collect RuleEdges and
     // used parameters.
     //
-    // This is a `loop` because if we discover that this entry needs to complete in order to break
+    // This is a `loop` because if we discover that this node needs to complete in order to break
     // a cycle on itself, it will re-compute dependencies after having partially-completed.
     loop {
-      if let Ok(res) = self.construct_dependencies(
-        rule_dependency_edges,
-        all_simplified_entries,
-        unfulfillable_rules,
-        entry.clone(),
-      ) {
+      if let Ok(res) =
+        self.transform_dependencies(node, output_graph, memoized_outputs, unfulfillable_nodes)
+      {
         break res;
       }
     }
   }
 
   ///
-  /// For each dependency of the rule, recurse for each potential match and collect RuleEdges and
-  /// used parameters.
+  /// Given an node and a mapping of all legal sources of each of its dependencies, recursively
+  /// generates a simplified node for each legal combination of parameters.
   ///
-  /// This is called in a `loop` until it succeeds, because if we discover that this entry needs
-  /// to complete in order to break a cycle on itself, it will re-compute dependencies after having
-  /// partially-completed.
-  ///
-  fn construct_dependencies(
+  fn transform_dependencies(
     &self,
-    rule_dependency_edges: &mut RuleDependencyEdges<R>,
-    all_simplified_entries: &mut HashMap<EntryWithDeps<R>, Vec<EntryWithDeps<R>>>,
-    unfulfillable_rules: &mut UnfulfillableRuleMap<R>,
-    entry: EntryWithDeps<R>,
-  ) -> Result<ConstructGraphResult<R>, ()> {
-    let mut fulfillable_candidates_by_key = HashMap::new();
+    node: &EntryWithDeps<R>,
+    output_graph: &mut HashMap<EntryWithDeps<R>, Self::OutputEdges>,
+    memoized_outputs: &mut HashMap<EntryWithDeps<R>, Vec<EntryWithDeps<R>>>,
+    unfulfillable_nodes: &mut HashMap<EntryWithDeps<R>, Vec<Diagnostic<R::TypeId>>>,
+  ) -> Result<GraphTransformResult<EntryWithDeps<R>>, ()> {
+    // Begin by recursively finding our monomorphized deps.
+    let mut candidates_by_key = HashMap::new();
     let mut cycled_on = HashSet::new();
     let mut unfulfillable_diagnostics = Vec::new();
 
-    let dependency_keys = entry.dependency_keys();
-
-    for dependency_key in dependency_keys {
-      let product = dependency_key.product();
-      let provided_param = dependency_key.provided_param();
-      let params = if let Some(provided_param) = provided_param {
-        // The dependency key provides a parameter: include it in the Params that are already in
-        // the context.
-        let mut params = entry.params().clone();
-        params.insert(provided_param);
-        params
-      } else {
-        entry.params().clone()
-      };
-
-      // Collect fulfillable candidates, used parameters, and cyclic deps.
+    for (edge, inputs) in self.edges_for(node) {
       let mut cycled = false;
-      let fulfillable_candidates = fulfillable_candidates_by_key
-        .entry(dependency_key)
-        .or_insert_with(Vec::new);
-      for candidate in self.rhs(&params, product) {
-        match candidate {
-          Entry::WithDeps(c) => match self.construct_graph_helper(
-            rule_dependency_edges,
-            all_simplified_entries,
-            unfulfillable_rules,
-            c,
-          ) {
-            ConstructGraphResult::Unfulfillable => {}
-            ConstructGraphResult::Fulfilled(simplified_entries) => {
-              fulfillable_candidates.push(
-                simplified_entries
-                  .into_iter()
-                  .filter(|e| {
-                    // Only entries that actually consume a provided (Get) parameter are eligible
-                    // for consideration.
-                    if let Some(pp) = provided_param {
-                      e.params().contains(&pp)
-                    } else {
-                      true
-                    }
-                  })
-                  .map(Entry::WithDeps)
-                  .collect::<Vec<_>>(),
-              );
+      let candidates = candidates_by_key.entry(edge).or_insert_with(Vec::new);
+      for input in inputs {
+        match input {
+          Entry::WithDeps(ref e) => {
+            match self.transform_graph_helper(
+              &e,
+              output_graph,
+              memoized_outputs,
+              unfulfillable_nodes,
+            ) {
+              GraphTransformResult::Unfulfillable => {}
+              GraphTransformResult::Fulfilled(simplified_nodes) => {
+                candidates.extend(simplified_nodes.into_iter().map(|e| e.into()));
+              }
+              GraphTransformResult::CycledOn {
+                cyclic_deps,
+                simplified_nodes,
+              } => {
+                cycled = true;
+                cycled_on.extend(cyclic_deps);
+                // NB: In the case of a cycle, we consider the dependency to be fulfillable, because
+                // it is if we are.
+                candidates.extend(simplified_nodes.into_iter().map(|e| e.into()));
+              }
             }
-            ConstructGraphResult::CycledOn {
-              cyclic_deps,
-              partial_simplified_entries,
-            } => {
-              cycled = true;
-              cycled_on.extend(cyclic_deps);
-              fulfillable_candidates.push(
-                partial_simplified_entries
-                  .into_iter()
-                  .map(Entry::WithDeps)
-                  .collect::<Vec<_>>(),
-              );
-            }
-          },
-          p @ Entry::Param(_) => {
-            fulfillable_candidates.push(vec![p]);
           }
-        };
+          Entry::Param(_) => {
+            candidates.push(input);
+          }
+        }
       }
 
       if cycled {
@@ -355,25 +388,9 @@ impl<'t, R: Rule> Builder<'t, R> {
         continue;
       }
 
-      if fulfillable_candidates.is_empty() {
+      if candidates.is_empty() {
         // If no candidates were fulfillable, this rule is not fulfillable.
-        unfulfillable_diagnostics.push(Diagnostic {
-          params: params.clone(),
-          reason: if params.is_empty() {
-            format!(
-              "No rule was available to compute {}. Maybe declare it as a RootRule({})?",
-              dependency_key, product,
-            )
-          } else {
-            format!(
-              "No rule was available to compute {} with parameter type{} {}",
-              dependency_key,
-              if params.len() > 1 { "s" } else { "" },
-              params_str(&params),
-            )
-          },
-          details: vec![],
-        });
+        unfulfillable_diagnostics.push(Self::unsatisfiable_dependency(node, &edge));
       }
     }
 
@@ -382,86 +399,104 @@ impl<'t, R: Rule> Builder<'t, R> {
     if !unfulfillable_diagnostics.is_empty() {
       // Was not fulfillable. Remove the placeholder: the unfulfillable entries we stored will
       // prevent us from attempting to expand this node again.
-      unfulfillable_rules
-        .entry(entry.clone())
+      unfulfillable_nodes
+        .entry(node.clone())
         .or_insert_with(Vec::new)
         .extend(unfulfillable_diagnostics);
-      rule_dependency_edges.remove(&entry);
-      return Ok(ConstructGraphResult::Unfulfillable);
+      output_graph.remove(&node);
+      return Ok(GraphTransformResult::Unfulfillable);
     }
 
-    // No dependencies were completely unfulfillable (although some may have been cyclic).
-    let flattened_fulfillable_candidates_by_key = fulfillable_candidates_by_key
-      .into_iter()
-      .map(|(k, candidate_group)| (k, candidate_group.into_iter().flatten().collect()))
-      .collect::<Vec<_>>();
+    let (selected_edges, diagnostics) = self.select_edges_for(&node, candidates_by_key);
 
-    // Generate one Entry per legal combination of parameters.
-    let simplified_entries =
-      match Self::monomorphize(&entry, &flattened_fulfillable_candidates_by_key) {
-        Ok(se) => se,
-        Err(ambiguous_diagnostics) => {
-          // At least one combination of the dependencies was ambiguous.
-          unfulfillable_rules
-            .entry(entry.clone())
-            .or_insert_with(Vec::new)
-            .extend(ambiguous_diagnostics);
-          rule_dependency_edges.remove(&entry);
-          return Ok(ConstructGraphResult::Unfulfillable);
-        }
-      };
-    let simplified_entries_only: Vec<_> = simplified_entries.keys().cloned().collect();
+    let simplified_nodes: Vec<_> = selected_edges.keys().cloned().collect();
 
+    // If none of the selected_edges was satisfiable, store the generated diagnostics: otherwise,
+    // store the memoized resulting entries.
+    output_graph.remove(&node);
     if cycled_on.is_empty() {
-      // All dependencies were fulfillable and none were blocked on cycles. Remove the
-      // placeholder and store the simplified entries.
-      rule_dependency_edges.remove(&entry);
-      rule_dependency_edges.extend(simplified_entries);
-
-      all_simplified_entries.insert(entry, simplified_entries_only.clone());
-      Ok(ConstructGraphResult::Fulfilled(simplified_entries_only))
+      // No deps were blocked on cycles.
+      if selected_edges.is_empty() {
+        unfulfillable_nodes
+          .entry(node.clone())
+          .or_insert_with(Vec::new)
+          .extend(diagnostics);
+        Ok(GraphTransformResult::Unfulfillable)
+      } else {
+        output_graph.extend(selected_edges.clone());
+        memoized_outputs.insert(node.clone(), simplified_nodes.clone());
+        Ok(GraphTransformResult::Fulfilled(simplified_nodes))
+      }
     } else {
       // The set of cycled dependencies can only contain call stack "parents" of the dependency: we
       // remove this entry from the set (if we're in it), until the top-most cyclic parent
       // (represented by an empty set) is the one that re-starts recursion.
-      cycled_on.remove(&entry);
+      cycled_on.remove(node);
       if cycled_on.is_empty() {
-        // If we were the only member of the set of cyclic dependencies, then we are the top-most
-        // cyclic parent in the call stack, and we should complete. This represents the case where
-        // a rule recursively depends on itself, and thus "cannot complete without completing".
-        //
-        // Store our simplified equivalence and then re-execute our dependency discovery. In this
-        // second attempt our cyclic dependencies will use the simplified representation(s) to succeed.
-        all_simplified_entries.insert(entry, simplified_entries_only);
+        memoized_outputs.insert(node.clone(), simplified_nodes);
         Err(())
       } else {
         // This rule may be fulfillable, but we can't compute its complete set of dependencies until
-        // parent rule entries complete. Remove our placeholder edges before returning.
-        rule_dependency_edges.remove(&entry);
-        Ok(ConstructGraphResult::CycledOn {
+        // parent rule entries complete.
+        Ok(GraphTransformResult::CycledOn {
           cyclic_deps: cycled_on,
-          partial_simplified_entries: simplified_entries_only,
+          simplified_nodes: simplified_nodes,
         })
       }
     }
   }
+}
 
-  ///
-  /// Given an Entry and a mapping of all legal sources of each of its dependencies, generates a
-  /// simplified Entry for each legal combination of parameters.
-  ///
-  /// Computes the union of all parameters used by the dependencies, and then uses the powerset of
-  /// used parameters to filter the possible combinations of dependencies. If multiple choices of
-  /// dependencies are possible for any set of parameters, then the graph is ambiguous.
-  ///
-  fn monomorphize(
-    entry: &EntryWithDeps<R>,
-    deps: &[(R::DependencyKey, Vec<Entry<R>>)],
-  ) -> Result<RuleDependencyEdges<R>, Vec<Diagnostic<R::TypeId>>> {
-    // Collect the powerset of the union of used parameters, ordered by set size.
-    let params_powerset: Vec<Vec<R::TypeId>> = {
+struct Construct<'t, R: Rule> {
+  tasks: &'t HashMap<R::TypeId, Vec<R>>,
+  roots: Vec<RootEntry<R>>,
+}
+
+impl<R: Rule> GraphTransform<R> for Construct<'_, R> {
+  type OutputEdges = PolyRuleEdges<R>;
+
+  fn roots<'a>(&'a self) -> Box<dyn Iterator<Item = EntryWithDeps<R>> + 'a> {
+    Box::new(self.roots.iter().map(|r| EntryWithDeps::Root(r.clone())))
+  }
+
+  fn edges_for(&self, node: &EntryWithDeps<R>) -> Vec<(R::DependencyKey, Vec<Entry<R>>)> {
+    node
+      .dependency_keys()
+      .into_iter()
+      .map(|dependency_key| {
+        let product = dependency_key.product();
+        let provided_param = dependency_key.provided_param();
+        let params = if let Some(provided_param) = provided_param {
+          // The dependency key provides a parameter: include it in the Params that are already in
+          // the context.
+          let mut params = node.params().clone();
+          params.insert(provided_param);
+          params
+        } else {
+          node.params().clone()
+        };
+        (dependency_key, rhs(&self.tasks, &params, product))
+      })
+      .collect()
+  }
+
+  #[allow(clippy::type_complexity)]
+  fn select_edges_for(
+    &self,
+    node: &EntryWithDeps<R>,
+    candidates_by_key: HashMap<R::DependencyKey, Vec<Entry<R>>>,
+  ) -> (
+    HashMap<EntryWithDeps<R>, Self::OutputEdges>,
+    Vec<Diagnostic<R::TypeId>>,
+  ) {
+    let edges = PolyRuleEdges {
+      dependencies: candidates_by_key,
+    };
+    let simplified_node = {
+      // NB: The set of dependencies is further pruned by monomorphization, but we prune it here
+      // since it results in a more accurate graph (and better error messages) earlier.
       let mut all_used_params = BTreeSet::new();
-      for (key, inputs) in deps {
+      for (key, inputs) in &edges.dependencies {
         let provided_param = key.provided_param();
         for input in inputs {
           all_used_params.extend(
@@ -472,9 +507,105 @@ impl<'t, R: Rule> Builder<'t, R> {
           );
         }
       }
+      node.simplified(all_used_params)
+    };
+
+    let mut edges_by_node = HashMap::new();
+    edges_by_node.insert(simplified_node, edges);
+    (edges_by_node, vec![])
+  }
+
+  fn unsatisfiable_dependency(
+    node: &EntryWithDeps<R>,
+    edge: &R::DependencyKey,
+  ) -> Diagnostic<R::TypeId> {
+    let params = node.params();
+    Diagnostic {
+      params: params.clone(),
+      reason: if params.is_empty() {
+        format!(
+          "No rule was available to compute {}. Maybe declare it as a RootRule({})?",
+          edge,
+          edge.product(),
+        )
+      } else {
+        format!(
+          "No rule was available to compute {} with parameter type{} {}",
+          edge,
+          if params.len() > 1 { "s" } else { "" },
+          params_str(params),
+        )
+      },
+      details: vec![],
+    }
+  }
+}
+
+impl<'t, R: Rule> Construct<'t, R> {
+  pub fn new(tasks: &'t HashMap<R::TypeId, Vec<R>>, roots: Vec<RootEntry<R>>) -> Construct<R> {
+    Construct { tasks, roots }
+  }
+}
+
+struct Monomorphize<R: Rule> {
+  input_graph: HashMap<EntryWithDeps<R>, PolyRuleEdges<R>>,
+}
+
+impl<R: Rule> GraphTransform<R> for Monomorphize<R> {
+  type OutputEdges = RuleEdges<R>;
+
+  fn roots<'a>(&'a self) -> Box<dyn Iterator<Item = EntryWithDeps<R>> + 'a> {
+    Box::new(
+      self
+        .input_graph
+        .keys()
+        .filter(|node| match node {
+          EntryWithDeps::Root(_) => true,
+          EntryWithDeps::Inner(_) => false,
+        })
+        .cloned(),
+    )
+  }
+
+  fn edges_for(&self, node: &EntryWithDeps<R>) -> Vec<(R::DependencyKey, Vec<Entry<R>>)> {
+    self
+      .input_graph
+      .get(node)
+      .unwrap()
+      .dependencies
+      .iter()
+      .map(|(e, n)| (*e, n.clone()))
+      .collect()
+  }
+
+  #[allow(clippy::type_complexity)]
+  fn select_edges_for(
+    &self,
+    node: &EntryWithDeps<R>,
+    candidates_by_key: HashMap<R::DependencyKey, Vec<Entry<R>>>,
+  ) -> (
+    HashMap<EntryWithDeps<R>, Self::OutputEdges>,
+    Vec<Diagnostic<R::TypeId>>,
+  ) {
+    let monomorphized_candidates: Vec<_> = candidates_by_key.into_iter().collect();
+
+    // Collect the powerset of the union of used parameters, ordered by set size.
+    let params_powerset: Vec<Vec<R::TypeId>> = {
       // Compute the powerset ordered by ascending set size.
-      let all_used_params = all_used_params.into_iter().collect::<Vec<_>>();
-      let mut param_sets = Self::powerset(&all_used_params).collect::<Vec<_>>();
+      let mut all_used_params = BTreeSet::new();
+      for (key, inputs) in &monomorphized_candidates {
+        let provided_param = key.provided_param();
+        for input in inputs {
+          all_used_params.extend(
+            input
+              .params()
+              .into_iter()
+              .filter(|p| Some(*p) != provided_param),
+          );
+        }
+      }
+      let mut param_sets =
+        Self::powerset(&all_used_params.into_iter().collect::<Vec<_>>()).collect::<Vec<_>>();
       param_sets.sort_by(|l, r| l.len().cmp(&r.len()));
       param_sets
     };
@@ -495,25 +626,47 @@ impl<'t, R: Rule> Builder<'t, R> {
         continue;
       }
 
-      match Self::choose_dependencies(&available_params, deps) {
-        Ok(Some(inputs)) => {
-          let mut rule_edges = PolyRuleEdges::default();
-          for (key, input) in inputs {
-            rule_edges.add_edge(key.clone(), input.clone());
-          }
-          combinations.insert(entry.simplified(available_params), rule_edges);
+      match Self::choose_dependencies(&available_params, &monomorphized_candidates) {
+        Ok(Some(rule_edges)) => {
+          combinations.insert(node.simplified(available_params), rule_edges);
         }
         Ok(None) => {}
         Err(diagnostic) => diagnostics.push(diagnostic),
       }
     }
 
-    // If none of the combinations was satisfiable, return the generated diagnostics.
-    if combinations.is_empty() {
-      Err(diagnostics)
-    } else {
-      Ok(combinations)
+    (combinations, diagnostics)
+  }
+
+  fn unsatisfiable_dependency(
+    node: &EntryWithDeps<R>,
+    edge: &R::DependencyKey,
+  ) -> Diagnostic<R::TypeId> {
+    let params = node.params();
+    Diagnostic {
+      params: params.clone(),
+      reason: if params.is_empty() {
+        format!(
+          "No rule was available to compute {}. Maybe declare it as a RootRule({})?",
+          edge,
+          edge.product(),
+        )
+      } else {
+        format!(
+          "No rule was available to compute {} with parameter type{} {}",
+          edge,
+          if params.len() > 1 { "s" } else { "" },
+          params_str(params),
+        )
+      },
+      details: vec![],
     }
+  }
+}
+
+impl<R: Rule> Monomorphize<R> {
+  fn new(input_graph: HashMap<EntryWithDeps<R>, PolyRuleEdges<R>>) -> Monomorphize<R> {
+    Monomorphize { input_graph }
   }
 
   ///
@@ -526,18 +679,24 @@ impl<'t, R: Rule> Builder<'t, R> {
   ///
   fn choose_dependencies<'a>(
     available_params: &ParamTypes<R::TypeId>,
-    deps: &'a [(R::DependencyKey, Vec<Entry<R>>)],
-  ) -> Result<Option<Vec<ChosenDependency<'a, R>>>, Diagnostic<R::TypeId>> {
-    let mut combination = Vec::new();
+    deps: &[ChosenDependency<R>],
+  ) -> Result<Option<RuleEdges<R>>, Diagnostic<R::TypeId>> {
+    let mut combination = RuleEdges::default();
     for (key, input_entries) in deps {
       let provided_param = key.provided_param();
       let satisfiable_entries = input_entries
         .iter()
         .filter(|input_entry| {
-          input_entry
-            .params()
-            .iter()
-            .all(|p| available_params.contains(p) || Some(*p) == provided_param)
+          let consumes_provided_param = if let Some(p) = provided_param {
+            input_entry.params().contains(&p)
+          } else {
+            true
+          };
+          consumes_provided_param
+            && input_entry
+              .params()
+              .iter()
+              .all(|p| available_params.contains(p) || Some(*p) == provided_param)
         })
         .collect::<Vec<_>>();
 
@@ -547,7 +706,7 @@ impl<'t, R: Rule> Builder<'t, R> {
           return Ok(None);
         }
         1 => {
-          combination.push((key, chosen_entries[0]));
+          combination.add_edge(key.clone(), chosen_entries[0].clone());
         }
         _ => {
           let params_clause = match available_params.len() {
@@ -607,27 +766,6 @@ impl<'t, R: Rule> Builder<'t, R> {
     rules
   }
 
-  ///
-  /// Given a polymorphic graph, where each Rule might have multiple implementations of each dep,
-  /// monomorphize it into a graph where each Rule has exactly one implementation per dep.
-  ///
-  fn monomorphize_graph(
-    poly_dependency_edges: RuleDependencyEdges<R>,
-  ) -> HashMap<EntryWithDeps<R>, RuleEdges<R>> {
-    poly_dependency_edges
-      .into_iter()
-      .map(|(e, poly_rule_edges)| {
-        let mut rule_edges = RuleEdges::default();
-        for (k, entries) in poly_rule_edges.dependencies.into_iter() {
-          for entry in entries {
-            rule_edges.add_edge(k, entry);
-          }
-        }
-        (e, rule_edges)
-      })
-      .collect()
-  }
-
   fn powerset<'a, T: Clone>(slice: &'a [T]) -> impl Iterator<Item = Vec<T>> + 'a {
     (0..(1 << slice.len())).map(move |mask| {
       let mut ss = Vec::new();
@@ -644,49 +782,5 @@ impl<'t, R: Rule> Builder<'t, R> {
       }
       ss
     })
-  }
-
-  fn gen_root_entries(&self, product_types: &HashSet<R::TypeId>) -> Vec<RootEntry<R>> {
-    product_types
-      .iter()
-      .filter_map(|product_type| self.gen_root_entry(&self.root_param_types, *product_type))
-      .collect()
-  }
-
-  fn gen_root_entry(
-    &self,
-    param_types: &ParamTypes<R::TypeId>,
-    product_type: R::TypeId,
-  ) -> Option<RootEntry<R>> {
-    let candidates = self.rhs(param_types, product_type);
-    if candidates.is_empty() {
-      None
-    } else {
-      Some(RootEntry {
-        params: param_types.clone(),
-        dependency_key: R::DependencyKey::new_root(product_type),
-      })
-    }
-  }
-
-  ///
-  /// Select Entries that can provide the given product type with the given parameters.
-  ///
-  fn rhs(&self, params: &ParamTypes<R::TypeId>, product_type: R::TypeId) -> Vec<Entry<R>> {
-    let mut entries = Vec::new();
-    // If the params can provide the type directly, add that.
-    if let Some(type_id) = params.get(&product_type) {
-      entries.push(Entry::Param(*type_id));
-    }
-    // If there are any rules which can produce the desired type, add them.
-    if let Some(matching_rules) = self.tasks.get(&product_type) {
-      entries.extend(matching_rules.iter().map(|rule| {
-        Entry::WithDeps(EntryWithDeps::Inner(InnerEntry {
-          params: params.clone(),
-          rule: rule.clone(),
-        }))
-      }));
-    }
-    entries
   }
 }

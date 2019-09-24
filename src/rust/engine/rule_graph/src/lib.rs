@@ -131,6 +131,12 @@ impl<R: Rule> Entry<R> {
   }
 }
 
+impl<R: Rule> From<EntryWithDeps<R>> for Entry<R> {
+  fn from(item: EntryWithDeps<R>) -> Self {
+    Entry::WithDeps(item)
+  }
+}
+
 #[derive(Eq, Hash, PartialEq, Clone, Debug)]
 pub struct RootEntry<R: Rule> {
   params: ParamTypes<R::TypeId>,
