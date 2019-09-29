@@ -35,7 +35,7 @@ use crate::{
   RuleEdges, RuleGraph, UnreachableError,
 };
 
-type ChosenDependency<R> = (<R as Rule>::DependencyKey, Vec<Entry<R>>);
+type ChosenDependency<R> = (<R as Rule>::DependencyKey, Vec<(bool, Entry<R>)>);
 
 ///
 /// A polymorphic form of crate::RuleEdges. Each dep has multiple possible implementation rules.
@@ -260,7 +260,7 @@ trait GraphTransform<R: Rule> {
   fn select_edges_for(
     &self,
     node: &EntryWithDeps<R>,
-    candidates_by_key: HashMap<R::DependencyKey, Vec<Entry<R>>>,
+    candidates_by_key: HashMap<R::DependencyKey, Vec<(bool, Entry<R>)>>,
   ) -> (
     HashMap<EntryWithDeps<R>, Self::OutputEdges>,
     Vec<Diagnostic<R::TypeId>>,
@@ -362,7 +362,7 @@ trait GraphTransform<R: Rule> {
             ) {
               GraphTransformResult::Unfulfillable => {}
               GraphTransformResult::Fulfilled(simplified_nodes) => {
-                candidates.extend(simplified_nodes.into_iter().map(|e| e.into()));
+                candidates.extend(simplified_nodes.into_iter().map(|e| (false, e.into())));
               }
               GraphTransformResult::CycledOn {
                 cyclic_deps,
@@ -372,12 +372,12 @@ trait GraphTransform<R: Rule> {
                 cycled_on.extend(cyclic_deps);
                 // NB: In the case of a cycle, we consider the dependency to be fulfillable, because
                 // it is if we are.
-                candidates.extend(simplified_nodes.into_iter().map(|e| e.into()));
+                candidates.extend(simplified_nodes.into_iter().map(|e| (true, e.into())));
               }
             }
           }
           Entry::Param(_) => {
-            candidates.push(input);
+            candidates.push((false, input));
           }
         }
       }
@@ -484,13 +484,24 @@ impl<R: Rule> GraphTransform<R> for Construct<'_, R> {
   fn select_edges_for(
     &self,
     node: &EntryWithDeps<R>,
-    candidates_by_key: HashMap<R::DependencyKey, Vec<Entry<R>>>,
+    candidates_by_key: HashMap<R::DependencyKey, Vec<(bool, Entry<R>)>>,
   ) -> (
     HashMap<EntryWithDeps<R>, Self::OutputEdges>,
     Vec<Diagnostic<R::TypeId>>,
   ) {
     let edges = PolyRuleEdges {
-      dependencies: candidates_by_key,
+      dependencies: candidates_by_key
+        .into_iter()
+        .map(|(edge, candidates)| {
+          (
+            edge,
+            candidates
+              .into_iter()
+              .map(|(_cyclic, candidate)| candidate)
+              .collect(),
+          )
+        })
+        .collect(),
     };
     let simplified_node = {
       // NB: The set of dependencies is further pruned by monomorphization, but we prune it here
@@ -582,7 +593,7 @@ impl<R: Rule> GraphTransform<R> for Monomorphize<R> {
   fn select_edges_for(
     &self,
     node: &EntryWithDeps<R>,
-    candidates_by_key: HashMap<R::DependencyKey, Vec<Entry<R>>>,
+    candidates_by_key: HashMap<R::DependencyKey, Vec<(bool, Entry<R>)>>,
   ) -> (
     HashMap<EntryWithDeps<R>, Self::OutputEdges>,
     Vec<Diagnostic<R::TypeId>>,
@@ -595,7 +606,7 @@ impl<R: Rule> GraphTransform<R> for Monomorphize<R> {
       let mut all_used_params = BTreeSet::new();
       for (key, inputs) in &monomorphized_candidates {
         let provided_param = key.provided_param();
-        for input in inputs {
+        for (_, input) in inputs {
           all_used_params.extend(
             input
               .params()
@@ -677,7 +688,7 @@ impl<R: Rule> Monomorphize<R> {
   /// If an ambiguity is detected in rule dependencies (ie, if multiple rules are satisfiable for
   /// a single dependency key), fail with a Diagnostic.
   ///
-  fn choose_dependencies<'a>(
+  fn choose_dependencies(
     available_params: &ParamTypes<R::TypeId>,
     deps: &[ChosenDependency<R>],
   ) -> Result<Option<RuleEdges<R>>, Diagnostic<R::TypeId>> {
@@ -686,17 +697,22 @@ impl<R: Rule> Monomorphize<R> {
       let provided_param = key.provided_param();
       let satisfiable_entries = input_entries
         .iter()
-        .filter(|input_entry| {
+        .filter_map(|(cyclic, input_entry)| {
           let consumes_provided_param = if let Some(p) = provided_param {
             input_entry.params().contains(&p)
           } else {
             true
           };
-          consumes_provided_param
+          let accept = (*cyclic || consumes_provided_param)
             && input_entry
               .params()
               .iter()
-              .all(|p| available_params.contains(p) || Some(*p) == provided_param)
+              .all(|p| available_params.contains(p) || Some(*p) == provided_param);
+          if accept {
+            Some(input_entry)
+          } else {
+            None
+          }
         })
         .collect::<Vec<_>>();
 

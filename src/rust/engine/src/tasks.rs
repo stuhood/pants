@@ -64,9 +64,16 @@ impl rule_graph::Rule for Rule {
         .map(|s| DependencyKey::JustSelect(*s))
         .chain(gets.iter().map(|g| DependencyKey::JustGet(*g)))
         .collect(),
-      &Rule::Intrinsic(Intrinsic { ref input, .. }) => {
-        vec![DependencyKey::JustSelect(Select::new(*input))]
-      }
+      &Rule::Intrinsic(Intrinsic {
+        ref product,
+        ref input,
+      }) => vec![
+        DependencyKey::JustSelect(Select::new(*input)),
+        DependencyKey::JustGet(Get {
+          product: *product,
+          subject: *input,
+        }),
+      ],
     }
   }
 
