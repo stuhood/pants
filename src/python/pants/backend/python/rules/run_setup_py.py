@@ -34,7 +34,6 @@ from pants.engine.fs import (
   DirectoryWithPrefixToStrip,
   FileContent,
   FilesContent,
-  InputFilesContent,
   PathGlobs,
   Snapshot,
   SnapshotSubset,
@@ -399,7 +398,7 @@ async def generate_chroot(request: SetupPyChrootRequest) -> SetupPyChroot:
     setup_kwargs_str=distutils_repr(setup_kwargs)
   ).encode()
   extra_files_digest = await Get[Digest](
-    InputFilesContent([
+    FilesContent([
       FileContent('setup.py', setup_py_content),
       FileContent('MANIFEST.in', 'include *.py'.encode())  # Make sure setup.py is included.
     ]))

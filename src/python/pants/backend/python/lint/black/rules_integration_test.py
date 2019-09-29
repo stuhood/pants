@@ -10,7 +10,7 @@ from pants.backend.python.lint.black.rules import rules as black_rules
 from pants.backend.python.rules import download_pex_bin
 from pants.base.specs import FilesystemLiteralSpec, OriginSpec, SingleAddress
 from pants.build_graph.address import Address
-from pants.engine.fs import Digest, FileContent, InputFilesContent, Snapshot
+from pants.engine.fs import Digest, FileContent, FilesContent, Snapshot
 from pants.engine.legacy.structs import TargetAdaptor, TargetAdaptorWithOrigin
 from pants.engine.rules import RootRule
 from pants.engine.selectors import Params
@@ -62,7 +62,7 @@ class BlackIntegrationTest(TestBase):
       args.append(f"--black-args='{passthrough_args}'")
     if skip:
       args.append(f"--black-skip")
-    input_snapshot = self.request_single_product(Snapshot, InputFilesContent(source_files))
+    input_snapshot = self.request_single_product(Snapshot, FilesContent(source_files))
     adaptor = TargetAdaptor(
       sources=EagerFilesetWithSpec('test', {'globs': []}, snapshot=input_snapshot),
       address=Address.parse("test:target"),
@@ -86,7 +86,7 @@ class BlackIntegrationTest(TestBase):
     return lint_result, fmt_result
 
   def get_digest(self, source_files: List[FileContent]) -> Digest:
-    return self.request_single_product(Digest, InputFilesContent(source_files))
+    return self.request_single_product(Digest, FilesContent(source_files))
 
   def test_single_passing_source(self) -> None:
     lint_result, fmt_result = self.run_black([self.good_source])

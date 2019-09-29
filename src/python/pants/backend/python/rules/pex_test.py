@@ -15,7 +15,7 @@ from pants.backend.python.rules.pex import (
 )
 from pants.backend.python.rules.pex import rules as pex_rules
 from pants.backend.python.subsystems import python_native_code, subprocess_environment
-from pants.engine.fs import Digest, DirectoryToMaterialize, FileContent, InputFilesContent
+from pants.engine.fs import Digest, DirectoryToMaterialize, FileContent, FilesContent
 from pants.engine.isolated_process import ExecuteProcessRequest, ExecuteProcessResult
 from pants.engine.rules import RootRule
 from pants.engine.selectors import Params
@@ -89,7 +89,7 @@ class PexTest(TestBase):
     )['info'])
 
   def test_pex_execution(self) -> None:
-    input_files_content = InputFilesContent((
+    input_files_content = FilesContent((
       FileContent(path='main.py', content=b'print("from main")'),
       FileContent(path='subdir/sub.py', content=b'print("from sub")'),
     ))

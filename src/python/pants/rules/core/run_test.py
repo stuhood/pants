@@ -7,7 +7,7 @@ from unittest.mock import Mock
 from pants.base.build_root import BuildRoot
 from pants.build_graph.address import Address
 from pants.engine.addressable import Addresses
-from pants.engine.fs import Digest, FileContent, InputFilesContent, Workspace
+from pants.engine.fs import Digest, FileContent, FilesContent, Workspace
 from pants.engine.interactive_runner import InteractiveProcessRequest, InteractiveRunner
 from pants.rules.core.binary import CreatedBinary
 from pants.rules.core.run import Run, run
@@ -24,7 +24,7 @@ class MockOptions:
 class RunTest(TestBase):
 
   def create_mock_binary(self, program_text: bytes) -> CreatedBinary:
-    input_files_content = InputFilesContent((
+    input_files_content = FilesContent((
       FileContent(path='program.py', content=program_text, is_executable=True),
     ))
     digest = self.request_single_product(Digest, input_files_content)

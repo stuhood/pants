@@ -11,7 +11,6 @@ from pants.engine.fs import (
   Digest,
   FileContent,
   FilesContent,
-  InputFilesContent,
   PathGlobs,
   Snapshot,
 )
@@ -214,7 +213,7 @@ class TestInputFileCreation(TestBase):
     file_name = 'some.filename'
     file_contents = b'some file contents'
 
-    input_file = InputFilesContent((FileContent(path=file_name, content=file_contents),))
+    input_file = FilesContent((FileContent(path=file_name, content=file_contents),))
     digest = self.request_single_product(Digest, input_file)
 
     req = ExecuteProcessRequest(
@@ -227,7 +226,7 @@ class TestInputFileCreation(TestBase):
     self.assertEqual(result.stdout, file_contents)
 
   def test_multiple_file_creation(self):
-    input_files_content = InputFilesContent((
+    input_files_content = ilesContent((
       FileContent(path='a.txt', content=b'hello'),
       FileContent(path='b.txt', content=b'goodbye'),
     ))
@@ -247,7 +246,7 @@ class TestInputFileCreation(TestBase):
     path = 'somedir/filename'
     content = b'file contents'
 
-    input_file = InputFilesContent((FileContent(path=path, content=content),))
+    input_file = FilesContent((FileContent(path=path, content=content),))
     digest = self.request_single_product(Digest, input_file)
 
     req = ExecuteProcessRequest(
@@ -263,7 +262,7 @@ class TestInputFileCreation(TestBase):
     file_name = 'echo.sh'
     file_contents = b'#!/bin/bash -eu\necho "Hello"\n'
 
-    input_file = InputFilesContent((FileContent(path=file_name, content=file_contents),))
+    input_file = FilesContent((FileContent(path=file_name, content=file_contents),))
     digest = self.request_single_product(Digest, input_file)
 
     req = ExecuteProcessRequest(
@@ -279,7 +278,7 @@ class TestInputFileCreation(TestBase):
     file_name = 'echo.sh'
     file_contents = b'#!/bin/bash -eu\necho "Hello"\n'
 
-    input_file = InputFilesContent((FileContent(path=file_name, content=file_contents, is_executable=True),))
+    input_file = FilesContent((FileContent(path=file_name, content=file_contents, is_executable=True),))
     digest = self.request_single_product(Digest, input_file)
 
     req = ExecuteProcessRequest(

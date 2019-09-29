@@ -250,7 +250,7 @@ impl Tasks {
     let intrinsics = vec![
       Intrinsic {
         product: types.directory_digest,
-        input: types.input_files_content,
+        input: types.files_content,
       },
       Intrinsic {
         product: types.snapshot,

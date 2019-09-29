@@ -10,7 +10,7 @@ from pants.engine.fs import (
   Digest,
   DirectoryToMaterialize,
   FileContent,
-  InputFilesContent,
+  FilesContent,
   MaterializeDirectoriesResult,
   MaterializeDirectoryResult,
   SingleFileExecutable,
@@ -27,7 +27,7 @@ from pants.testutil.test_base import TestBase
 
 @dataclass(frozen=True)
 class MessageToGoalRule:
-  input_files_content: InputFilesContent
+  input_files_content: FilesContent
 
 
 class MockWorkspaceGoalOptions(GoalSubsystem):
@@ -40,7 +40,7 @@ class MockWorkspaceGoal(Goal):
 
 @goal_rule
 async def workspace_goal_rule(console: Console, workspace: Workspace, msg: MessageToGoalRule) -> MockWorkspaceGoal:
-  digest = await Get[Digest](InputFilesContent, msg.input_files_content)
+  digest = await Get[Digest](FilesContent, msg.input_files_content)
   output = workspace.materialize_directory(DirectoryToMaterialize(digest))
   console.print_stdout(output.output_paths[0], end='')
   return MockWorkspaceGoal(exit_code=0)
@@ -58,7 +58,7 @@ class WorkspaceInGoalRuleTest(GoalRuleTestBase):
 
   def test(self):
     msg = MessageToGoalRule(
-      input_files_content=InputFilesContent([FileContent(path='a.txt', content=b'hello')])
+      input_files_content=FilesContent([FileContent(path='a.txt', content=b'hello')])
     )
     output_path = Path(self.build_root, 'a.txt')
     self.assert_console_output_contains(str(output_path), additional_params=[msg])
@@ -73,7 +73,7 @@ class FileSystemTest(TestBase):
     #TODO(#8336): at some point, this test should require that Workspace only be invoked from an @goal_rule
     workspace = Workspace(self.scheduler)
 
-    input_files_content = InputFilesContent((
+    input_files_content = FilesContent((
       FileContent(path='a.txt', content=b'hello'),
       FileContent(path='subdir/b.txt', content=b'goodbye'),
     ))
@@ -114,7 +114,7 @@ class IsChildOfTest(TestBase):
 class SingleFileExecutableTest(TestBase):
 
   def test_raises_with_multiple_files(self):
-    input_files_content = InputFilesContent((
+    input_files_content = FilesContent((
       FileContent(path='a.txt', content=b'test file contents'),
       FileContent(path='b.txt', content=b'more test file contents'),
     ))
@@ -135,14 +135,14 @@ class SingleFileExecutableTest(TestBase):
       SingleFileExecutable(snapshot)
 
   def test_accepts_single_file_snapshot(self):
-    input_files_content = InputFilesContent((
+    input_files_content = FilesContent((
       FileContent(path='subdir/a.txt', content=b'test file contents'),
     ))
     snapshot = self.request_single_product(Snapshot, input_files_content)
 
     assert SingleFileExecutable(snapshot).exe_filename == './subdir/a.txt'
 
-    input_files_content = InputFilesContent((
+    input_files_content = FilesContent((
       FileContent(path='some_silly_file_name', content=b'test file contents'),
     ))
     snapshot = self.request_single_product(Snapshot, input_files_content)

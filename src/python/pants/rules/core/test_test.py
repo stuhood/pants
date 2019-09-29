@@ -9,7 +9,7 @@ from unittest.mock import Mock
 from pants.base.specs import DescendantAddresses, OriginSpec, SingleAddress
 from pants.build_graph.address import Address
 from pants.engine.addressable import AddressesWithOrigins, AddressWithOrigin
-from pants.engine.fs import EMPTY_DIRECTORY_DIGEST, Digest, FileContent, InputFilesContent, Snapshot
+from pants.engine.fs import EMPTY_DIRECTORY_DIGEST, Digest, FileContent, FilesContent, Snapshot
 from pants.engine.interactive_runner import InteractiveProcessRequest, InteractiveRunner
 from pants.engine.legacy.graph import HydratedTarget, HydratedTargetWithOrigin
 from pants.engine.legacy.structs import (
@@ -40,7 +40,7 @@ class MockOptions:
 
 class TestTest(TestBase):
   def make_ipr(self, content: bytes) -> InteractiveProcessRequest:
-    input_files_content = InputFilesContent((
+    input_files_content = FilesContent((
       FileContent(path='program.py', content=content, is_executable=True),
     ))
     digest = self.request_single_product(Digest, input_files_content)

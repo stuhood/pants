@@ -8,7 +8,7 @@ from pants.engine.fs import (
   Digest,
   DirectoriesToMerge,
   FileContent,
-  InputFilesContent,
+  FilesContent,
   Snapshot,
 )
 from pants.engine.legacy.graph import HydratedTarget, HydratedTargets
@@ -51,7 +51,7 @@ async def prepare_chrooted_python_sources(
   inits_digest = EMPTY_DIRECTORY_DIGEST
   if missing_init_files:
     inits_digest = await Get[Digest](
-      InputFilesContent(FileContent(path=fp, content=b"") for fp in missing_init_files)
+      FilesContent(FileContent(path=fp, content=b"") for fp in missing_init_files)
     )
 
   result = await Get[Snapshot](

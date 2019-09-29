@@ -42,13 +42,6 @@ class FilesContent(Collection[FileContent]):
   pass
 
 
-class InputFilesContent(FilesContent):
-  """A newtype wrapper for FilesContent.
-  TODO(7710): This class is currently necessary because the engine
-  otherwise finds a cycle between FilesContent <=> DirectoryDigest.
-  """
-
-
 @frozen_after_init
 @dataclass(unsafe_hash=True)
 class PathGlobs:
@@ -316,13 +309,13 @@ class SingleFileExecutable:
 def create_fs_rules():
   """Creates rules that consume the intrinsic filesystem types."""
   return [
-    RootRule(Workspace),
-    RootRule(InputFilesContent),
     RootRule(Digest),
     RootRule(DirectoriesToMerge),
-    RootRule(PathGlobs),
-    RootRule(DirectoryWithPrefixToStrip),
     RootRule(DirectoryWithPrefixToAdd),
-    RootRule(UrlToFetch),
+    RootRule(DirectoryWithPrefixToStrip),
+    RootRule(FilesContent),
+    RootRule(PathGlobs),
     RootRule(SnapshotSubset),
+    RootRule(UrlToFetch),
+    RootRule(Workspace),
   ]

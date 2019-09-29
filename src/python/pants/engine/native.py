@@ -25,7 +25,6 @@ from pants.engine.fs import (
   DirectoryWithPrefixToStrip,
   FileContent,
   FilesContent,
-  InputFilesContent,
   MaterializeDirectoriesResult,
   MaterializeDirectoryResult,
   PathGlobs,
@@ -568,7 +567,6 @@ class EngineTypes(NamedTuple):
   directories_to_merge: TypeId
   directory_with_prefix_to_strip: TypeId
   directory_with_prefix_to_add: TypeId
-  input_files_content: TypeId
   dir: TypeId
   file: TypeId
   link: TypeId
@@ -932,7 +930,6 @@ class Native(metaclass=SingletonMetaclass):
         directories_to_merge=ti(DirectoriesToMerge),
         directory_with_prefix_to_strip=ti(DirectoryWithPrefixToStrip),
         directory_with_prefix_to_add=ti(DirectoryWithPrefixToAdd),
-        input_files_content=ti(InputFilesContent),
         dir=ti(Dir),
         file=ti(File),
         link=ti(Link),

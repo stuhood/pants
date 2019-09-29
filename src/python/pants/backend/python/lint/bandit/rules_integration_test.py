@@ -12,7 +12,7 @@ from pants.backend.python.targets.python_library import PythonLibrary
 from pants.base.specs import FilesystemLiteralSpec, OriginSpec, SingleAddress
 from pants.build_graph.address import Address
 from pants.build_graph.build_file_aliases import BuildFileAliases
-from pants.engine.fs import FileContent, InputFilesContent, Snapshot
+from pants.engine.fs import FileContent, FilesContent, Snapshot
 from pants.engine.legacy.structs import PythonTargetAdaptor, PythonTargetAdaptorWithOrigin
 from pants.engine.rules import RootRule
 from pants.engine.selectors import Params
@@ -66,7 +66,7 @@ class BanditIntegrationTest(TestBase):
       args.append(f"--bandit-args={passthrough_args}")
     if skip:
       args.append(f"--bandit-skip")
-    input_snapshot = self.request_single_product(Snapshot, InputFilesContent(source_files))
+    input_snapshot = self.request_single_product(Snapshot, FilesContent(source_files))
     adaptor = PythonTargetAdaptor(
       sources=EagerFilesetWithSpec('test', {'globs': []}, snapshot=input_snapshot),
       address=Address.parse("test:target"),

@@ -33,8 +33,8 @@ pub fn run_intrinsic(
     url_to_fetch_to_snapshot(context, value)
   } else if product == types.snapshot && input == types.path_globs {
     path_globs_to_snapshot(context, value)
-  } else if product == types.directory_digest && input == types.input_files_content {
-    input_files_content_to_digest(context, value)
+  } else if product == types.directory_digest && input == types.files_content {
+    files_content_to_digest(context, value)
   } else if product == types.snapshot && input == types.snapshot_subset {
     snapshot_subset_to_snapshot(context, value)
   } else {
@@ -165,7 +165,7 @@ fn path_globs_to_snapshot(context: Context, val: Value) -> NodeFuture<Value> {
     .to_boxed()
 }
 
-fn input_files_content_to_digest(context: Context, files_content: Value) -> NodeFuture<Value> {
+fn files_content_to_digest(context: Context, files_content: Value) -> NodeFuture<Value> {
   let workunit_store = context.session.workunit_store();
   let file_values = externs::project_multi(&files_content, "dependencies");
   let digests: Vec<_> = file_values

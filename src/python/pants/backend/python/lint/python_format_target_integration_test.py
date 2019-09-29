@@ -14,7 +14,7 @@ from pants.backend.python.lint.python_format_target import (
 from pants.backend.python.rules import download_pex_bin
 from pants.base.specs import SingleAddress
 from pants.build_graph.address import Address
-from pants.engine.fs import Digest, FileContent, InputFilesContent, Snapshot
+from pants.engine.fs import Digest, FileContent, FilesContent, Snapshot
 from pants.engine.legacy.structs import TargetAdaptor, TargetAdaptorWithOrigin
 from pants.engine.rules import RootRule
 from pants.engine.selectors import Params
@@ -49,7 +49,7 @@ class PythonFormatTargetIntegrationTest(TestBase):
     self,
     source_files: List[FileContent],
   ) -> AggregatedFmtResults:
-    input_snapshot = self.request_single_product(Snapshot, InputFilesContent(source_files))
+    input_snapshot = self.request_single_product(Snapshot, FilesContent(source_files))
     adaptor = TargetAdaptor(
       sources=EagerFilesetWithSpec('test', {'globs': []}, snapshot=input_snapshot),
       address=Address.parse("test:target"),
@@ -71,7 +71,7 @@ class PythonFormatTargetIntegrationTest(TestBase):
     return results
 
   def get_digest(self, source_files: List[FileContent]) -> Digest:
-    return self.request_single_product(Digest, InputFilesContent(source_files))
+    return self.request_single_product(Digest, FilesContent(source_files))
 
   def test_multiple_formatters_changing_the_same_file(self) -> None:
     original_source = FileContent(

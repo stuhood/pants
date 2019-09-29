@@ -20,7 +20,6 @@ from pants.engine.fs import (
   DirectoryWithPrefixToStrip,
   FileContent,
   FilesContent,
-  InputFilesContent,
   PathGlobs,
   PathGlobsAndRoot,
   Snapshot,
@@ -366,7 +365,7 @@ class FSTest(TestBase, SchedulerTestBase, metaclass=ABCMeta):
     assert Path(self.build_root, "test/roland").read_text() == "European Burmese"
 
   def test_add_prefix(self):
-    input_files_content = InputFilesContent((
+    input_files_content = FilesContent((
       FileContent(path='main.py', content=b'print("from main")'),
       FileContent(path='subdir/sub.py', content=b'print("from sub")'),
     ))
@@ -596,7 +595,7 @@ class FSTest(TestBase, SchedulerTestBase, metaclass=ABCMeta):
 
   def generate_original_digest(self) -> Digest:
     content = b'dummy content'
-    input_files_content = InputFilesContent((
+    input_files_content = FilesContent((
       FileContent(path='a.txt', content=content),
       FileContent(path='b.txt', content=content),
       FileContent(path='c.txt', content=content),
@@ -626,7 +625,7 @@ class FSTest(TestBase, SchedulerTestBase, metaclass=ABCMeta):
     assert set(subset_snapshot.dirs) == {'subdir2/nested_subdir'}
 
     content = b'dummy content'
-    subset_input = InputFilesContent((
+    subset_input = FilesContent((
       FileContent(path='a.txt', content=content),
       FileContent(path='c.txt', content=content),
       FileContent(path='subdir2/a.txt', content=content),
@@ -654,7 +653,7 @@ class FSTest(TestBase, SchedulerTestBase, metaclass=ABCMeta):
     assert set(subset_snapshot.files) == {"a.txt"}
 
     content = b'dummy content'
-    subset_input = InputFilesContent((
+    subset_input = FilesContent((
       FileContent(path='a.txt', content=content),
     ))
 

@@ -11,7 +11,7 @@ from pants.engine.fs import (
   Digest,
   DirectoriesToMerge,
   FileContent,
-  InputFilesContent,
+  FilesContent,
   Snapshot,
   Workspace,
 )
@@ -65,7 +65,7 @@ class FmtTest(TestBase):
   def run_fmt_rule(self, *, targets: List[HydratedTargetWithOrigin]) -> Tuple[Fmt, str]:
     result_digest = self.request_single_product(
       Digest,
-      InputFilesContent([
+      FilesContent([
         FileContent(path=self.formatted_file.as_posix(), content=self.formatted_content.encode())
       ])
     )

@@ -12,7 +12,6 @@ from pants.engine.fs import (
   DirectoriesToMerge,
   FileContent,
   FilesContent,
-  InputFilesContent,
   SingleFileExecutable,
   Snapshot,
 )
@@ -77,7 +76,7 @@ async def run_cloc(
 
   input_files_filename = 'input_files.txt'
   input_file_digest = await Get[Digest](
-    InputFilesContent([FileContent(path=input_files_filename, content=file_content)]),
+    FilesContent([FileContent(path=input_files_filename, content=file_content)]),
   )
   digest = await Get[Digest](
     DirectoriesToMerge(

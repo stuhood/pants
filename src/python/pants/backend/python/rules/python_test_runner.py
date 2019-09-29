@@ -12,7 +12,7 @@ from pants.backend.python.rules.prepare_chrooted_python_sources import ChrootedP
 from pants.backend.python.subsystems.pytest import PyTest
 from pants.backend.python.subsystems.subprocess_environment import SubprocessEncodingEnvironment
 from pants.engine.addressable import Addresses
-from pants.engine.fs import Digest, DirectoriesToMerge, FileContent, InputFilesContent
+from pants.engine.fs import Digest, DirectoriesToMerge, FileContent, FilesContent
 from pants.engine.interactive_runner import InteractiveProcessRequest
 from pants.engine.isolated_process import ExecuteProcessRequest, FallibleExecuteProcessResult
 from pants.engine.legacy.graph import HydratedTargets, TransitiveHydratedTargets
@@ -36,8 +36,8 @@ DEFAULT_COVERAGE_CONFIG = dedent(f"""
   """)
 
 
-def get_coveragerc_input(coveragerc_content: str) -> InputFilesContent:
-  return InputFilesContent(
+def get_coveragerc_input(coveragerc_content: str) -> FilesContent:
+  return FilesContent(
     [
       FileContent(
         path='.coveragerc',
@@ -137,7 +137,7 @@ async def setup_pytest_for_target(
 
   coverage_args = []
   if test_options.values.run_coverage:
-    coveragerc_digest = await Get[Digest](InputFilesContent, get_coveragerc_input(DEFAULT_COVERAGE_CONFIG))
+    coveragerc_digest = await Get[Digest](FilesContent, get_coveragerc_input(DEFAULT_COVERAGE_CONFIG))
     directories_to_merge.append(coveragerc_digest)
     packages_to_cover = get_packages_to_cover(
       adaptor, source_root_stripped_file_paths=test_file_names,
