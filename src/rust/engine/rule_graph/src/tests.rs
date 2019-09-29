@@ -2,7 +2,7 @@ use crate::{Palette, RuleGraph};
 use std::fmt;
 
 #[test]
-fn create_and_validate_valid() {
+fn valid() {
   let rules = vec![("a", vec![Rule("a_from_b", vec![DependencyKey("b", None)])])]
     .into_iter()
     .collect();
@@ -13,7 +13,7 @@ fn create_and_validate_valid() {
 }
 
 #[test]
-fn create_and_validate_no_root() {
+fn no_root() {
   let rules = vec![("a", vec![Rule("a_from_b", vec![DependencyKey("b", None)])])]
     .into_iter()
     .collect();
@@ -28,7 +28,7 @@ fn create_and_validate_no_root() {
 }
 
 #[test]
-fn create_and_validate_self_cycle() {
+fn recursion() {
   let rules = vec![(
     "Fib",
     vec![Rule(
@@ -45,8 +45,82 @@ fn create_and_validate_self_cycle() {
   let graph = RuleGraph::new(&rules, roots);
 
   graph.validate().unwrap();
-  graph.find_root_edges(vec!["int"], "Fib").unwrap();
-  graph.find_root_edges(vec!["Fib"], "Fib").unwrap();
+  graph.find_exact_root_edges(vec!["int"], "Fib").unwrap();
+  graph.find_exact_root_edges(vec!["Fib"], "Fib").unwrap();
+}
+
+#[test]
+fn mutual_recursion_in_get() {
+  let rules = vec![
+    (
+      "IsEven",
+      vec![Rule(
+        "is_even",
+        vec![
+          DependencyKey("int", None),
+          DependencyKey("IsOdd", Some("int")),
+        ],
+      )],
+    ),
+    (
+      "IsOdd",
+      vec![Rule(
+        "is_odd",
+        vec![
+          DependencyKey("int", None),
+          DependencyKey("IsEven", Some("int")),
+        ],
+      )],
+    ),
+  ]
+  .into_iter()
+  .collect();
+  let roots = vec!["IsEven", "IsOdd", "int", "nonsense"];
+  let graph = RuleGraph::new(&rules, roots);
+
+  graph.validate().unwrap();
+  graph.find_exact_root_edges(vec!["int"], "IsEven").unwrap();
+  graph.find_exact_root_edges(vec!["int"], "IsOdd").unwrap();
+}
+
+#[test]
+fn mutual_recursion_in_select() {
+  let rules = vec![
+    (
+      "Example",
+      vec![Rule(
+        "Example",
+        vec![DependencyKey("Digest", Some("FilesContent"))],
+      )],
+    ),
+    (
+      "FilesContent",
+      vec![Rule(
+        "files_content_from_digest",
+        vec![DependencyKey("Digest", None)],
+      )],
+    ),
+    (
+      "Digest",
+      vec![Rule(
+        "digest_from_files_content",
+        vec![DependencyKey("FilesContent", None)],
+      )],
+    ),
+  ]
+  .into_iter()
+  .collect();
+  let roots = vec!["Digest", "FilesContent", "nonsense"];
+  let graph = RuleGraph::new(&rules, roots);
+
+  graph.validate().unwrap();
+  graph
+    .find_exact_root_edges(vec!["Digest"], "FilesContent")
+    .unwrap();
+  graph
+    .find_exact_root_edges(vec!["FilesContent"], "Digest")
+    .unwrap();
+  graph.find_exact_root_edges(vec![], "Example").unwrap();
 }
 
 impl super::TypeId for &'static str {

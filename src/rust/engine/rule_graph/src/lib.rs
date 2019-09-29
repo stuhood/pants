@@ -293,7 +293,7 @@ impl<R: Rule> RuleGraph<R> {
     Builder::new(tasks, root_param_types).full_graph()
   }
 
-  pub fn find_root_edges<I: IntoIterator<Item = R::TypeId>>(
+  pub fn find_exact_root_edges<I: IntoIterator<Item = R::TypeId>>(
     &self,
     param_inputs: I,
     product: R::TypeId,
@@ -307,8 +307,64 @@ impl<R: Rule> RuleGraph<R> {
 
     // Attempt to find an exact match.
     if let Some(re) = self.rule_dependency_edges.get(&EntryWithDeps::Root(root)) {
-      return Ok(re.clone());
+      Ok(re.clone())
+    } else if params.is_subset(&self.root_param_types) {
+      // The Params were all registered as RootRules, but the combination wasn't legal.
+      let mut suggestions: Vec<_> = self
+        .rule_dependency_edges
+        .keys()
+        .filter_map(|entry| match entry {
+          EntryWithDeps::Root(ref root_entry) if root_entry.dependency_key == dependency_key => {
+            Some(format!("Params({})", params_str(&root_entry.params)))
+          }
+          _ => None,
+        })
+        .collect();
+      let suggestions_str = if suggestions.is_empty() {
+        format!(
+          "return the type {}. Is the @rule that you're expecting to run registered?",
+          product,
+        )
+      } else {
+        suggestions.sort();
+        format!(
+          "can compute {} given input Params({}), but there were @rules that could compute it using:\n  {}",
+          product,
+          params_str(&params),
+          suggestions.join("\n  ")
+        )
+      };
+      Err(format!("No installed @rules {}", suggestions_str,))
+    } else {
+      // Some Param(s) were not registered.
+      let mut unregistered_params: Vec<_> = params
+        .difference(&self.root_param_types)
+        .map(|p| p.to_string())
+        .collect();
+      unregistered_params.sort();
+      Err(format!(
+        "Types that will be passed as Params at the root of a graph need to be registered via RootRule:\n  {}",
+        unregistered_params.join("\n  "),
+    ))
     }
+  }
+
+  pub fn find_root_edges<I: IntoIterator<Item = R::TypeId>>(
+    &self,
+    param_inputs: I,
+    product: R::TypeId,
+  ) -> Result<RuleEdges<R>, String> {
+    let params: ParamTypes<_> = param_inputs.into_iter().collect();
+
+    // Attempt to find an exact match, and return early if we do.
+    let exact_match_err = match self.find_exact_root_edges(params.clone(), product) {
+      Ok(re) => {
+        return Ok(re);
+      }
+      Err(e) => e,
+    };
+
+    let dependency_key = R::DependencyKey::new_root(product);
 
     // Otherwise, scan for partial/subset matches.
     // TODO: Is it worth indexing this by product type?
@@ -328,46 +384,7 @@ impl<R: Rule> RuleGraph<R> {
 
     match subset_matches.len() {
       1 => Ok(subset_matches[0].1.clone()),
-      0 if params.is_subset(&self.root_param_types) => {
-        // The Params were all registered as RootRules, but the combination wasn't legal.
-        let mut suggestions: Vec<_> = self
-          .rule_dependency_edges
-          .keys()
-          .filter_map(|entry| match entry {
-            EntryWithDeps::Root(ref root_entry) if root_entry.dependency_key == dependency_key => {
-              Some(format!("Params({})", params_str(&root_entry.params)))
-            }
-            _ => None,
-          })
-          .collect();
-        let suggestions_str = if suggestions.is_empty() {
-          format!(
-            "return the type {}. Is the @rule that you're expecting to run registered?",
-            product,
-          )
-        } else {
-          suggestions.sort();
-          format!(
-            "can compute {} given input Params({}), but there were @rules that could compute it using:\n  {}",
-            product,
-            params_str(&params),
-            suggestions.join("\n  ")
-          )
-        };
-        Err(format!("No installed @rules {}", suggestions_str,))
-      }
-      0 => {
-        // Some Param(s) were not registered.
-        let mut unregistered_params: Vec<_> = params
-          .difference(&self.root_param_types)
-          .map(|p| p.to_string())
-          .collect();
-        unregistered_params.sort();
-        Err(format!(
-          "Types that will be passed as Params at the root of a graph need to be registered via RootRule:\n  {}",
-          unregistered_params.join("\n  "),
-        ))
-      }
+      0 => Err(exact_match_err),
       _ => {
         let match_strs = subset_matches
           .into_iter()
