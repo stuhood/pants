@@ -51,7 +51,10 @@ class RequestsSession:
   class Factory(Subsystem):
     options_scope = 'http-artifact-cache'
 
-    _default_pool_size = multiprocessing.cpu_count()
+    # Maintain a connection pool of max size equaling the larger of the number of available cores,
+    # or the default from the requests package (which is usually 10).
+    _default_pool_size = max(multiprocessing.cpu_count(), requests.adapters.DEFAULT_POOLSIZE)
+    # By default, don't perform any retries.
     _default_retries = 0
 
     @classmethod
@@ -119,7 +122,12 @@ class RequestsSession:
     return cls.Factory.create(requests_logger)
 
   def should_check_for_max_retry_error(self) -> bool:
-    return self.max_retries is not None
+    """Helper method extracted for convenience in testing.
+
+    If this method returns False, pants will convert a MaxRetryError into a
+    NonfatalArtifactCacheError. Otherwise, it will re-raise the MaxRetryError.
+    """
+    return bool(self.max_retries)
 
   @memoized_classmethod
   def session(cls):
