@@ -62,24 +62,6 @@ class TestArtifactCache(TestBase):
       f.close()
       yield path
 
-  _cache_retry_defaults = dict(
-    requests_logging_level='WARNING',
-    max_connection_pools=10,
-    max_connections_within_pool=10,
-    max_retries=10,
-    max_retries_on_connection_errors=10,
-    max_retries_on_read_errors=10,
-    backoff_factor=0,
-    blocking_pool=False,
-    slow_download_timeout_seconds=60,
-  )
-
-  def set_cache_retry_options(self, **kwargs):
-    self.set_options_for_scope(RequestsSession.Factory.options_scope, **{
-      **self._cache_retry_defaults,
-      **kwargs,
-    })
-
   @contextmanager
   def restore_max_retries_flag(self):
     try:
@@ -88,10 +70,12 @@ class TestArtifactCache(TestBase):
       RequestsSession._max_retries_exceeded = False
 
   @contextmanager
-  def ignore_max_retry_errors(self):
-    with unittest.mock.patch.object(RequestsSession, 'should_check_for_max_retry_error',
-                                    autospec=True, spec_set=True) as check_retries_predicate:
-      check_retries_predicate.return_value = False
+  def override_check_for_max_retry(self, should_check: bool):
+    patch_opts = dict(autospec=True, spec_set=True)
+    with self.restore_max_retries_flag(),\
+         unittest.mock.patch.object(RequestsSession, 'should_check_for_max_retry_error',
+                                    **patch_opts) as check_max_retry_predicate:
+      check_max_retry_predicate.return_value = should_check
       yield
 
   def setUp(self):
@@ -125,8 +109,7 @@ class TestArtifactCache(TestBase):
         artifact_cache = RESTfulArtifactCache(artifact_root,
                                               BestUrlSelector([bad_url, good_server.url], max_failures=0),
                                               local)
-        with self.ignore_max_retry_errors(),\
-             self.assertRaises(NonfatalArtifactCacheError) as ex:
+        with self.assertRaises(NonfatalArtifactCacheError) as ex:
           self.do_test_artifact_cache(artifact_cache)
         self.assertIn('Failed to HEAD', str(ex.exception))
 
@@ -260,8 +243,6 @@ class TestArtifactCache(TestBase):
   def test_noops_after_max_retries_exceeded(self):
     key = CacheKey('muppet_key', 'fake_hash')
 
-    self.set_cache_retry_options()
-
     with self.setup_rest_cache() as cache:
       # Assert that the artifact doesn't exist, then insert it and check that it exists.
       self.assertFalse(call_use_cached_files((cache, key, None)))
@@ -276,17 +257,14 @@ class TestArtifactCache(TestBase):
       with self.restore_max_retries_flag():
         RequestsSession._max_retries_exceeded = True
         self.assertFalse(call_use_cached_files((cache, key, None)))
+      # After the flag is toggled back, the cache successfully finds the entry.
       self.assertTrue(call_use_cached_files((cache, key, None)))
 
   def test_max_retries_exceeded(self):
     key = CacheKey('muppet_key', 'fake_hash')
 
-    self.set_cache_retry_options(max_retries=1,
-                                 max_retries_on_connection_errors=1,
-                                 max_retries_on_read_errors=1)
-
     # Assert that the global "retries exceeded" flag is set when retries are exceeded.
-    with self.restore_max_retries_flag(),\
+    with self.override_check_for_max_retry(should_check=True),\
          self.setup_rest_cache(return_failed='connection-error') as cache,\
          self.captured_logging(logging.WARNING) as captured:
 
