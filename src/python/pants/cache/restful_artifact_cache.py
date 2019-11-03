@@ -5,28 +5,135 @@ import logging
 import multiprocessing
 import queue
 import threading
+from dataclasses import dataclass
 
 import requests
 from requests import RequestException
+from urllib3.exceptions import MaxRetryError
+from urllib3.util.retry import Retry
 
 from pants.cache.artifact_cache import ArtifactCache, NonfatalArtifactCacheError, UnreadableArtifact
+from pants.subsystem.subsystem import Subsystem
+from pants.util.memo import memoized_classmethod
 
 
 logger = logging.getLogger(__name__)
 
-# Reduce the somewhat verbose logging of requests.
-# TODO do this in a central place
-logging.getLogger('requests').setLevel(logging.WARNING)
 
-
+@dataclass(frozen=True)
 class RequestsSession:
-  _session = None
+  """Configuration for the session object used to fetch HTTP(S) artifact cache entries.
 
-  @classmethod
-  def instance(cls):
-    if cls._session is None:
-      cls._session = requests.Session()
-    return cls._session
+  See
+  https://github.com/psf/requests/blob/d2590ee46c0641958b6d4792a206bd5171cb247d/requests/adapters.py#L113
+  for documentation on the HTTPAdapter class, and check out
+  https://urllib3.readthedocs.io/en/latest/advanced-usage.html#customizing-pool-behavior for
+  a description of the connection pooling implementation in urllib3.
+
+  See
+  https://github.com/urllib3/urllib3/blob/f4b36ad045ccfbbfaaadd8e69f9b32c5d81cbd84/src/urllib3/util/retry.py#L29
+  for the Retry class (also from urllib3) which is used here to configure request retries.
+  """
+  max_connection_pools: int
+  max_connections_within_pool: int
+  max_retries: int
+  max_retries_on_connection_errors: int
+  max_retries_on_read_errors: int
+  blocking_pool: bool
+  slow_download_timeout_seconds: int
+
+  # Global flag which is set to True if our global connection pool singleton raises a MaxRetryError.
+  _max_retries_exceeded = False
+
+  class Factory(Subsystem):
+    options_scope = 'http-artifact-cache'
+
+    _default_pool_size = requests.adapters.DEFAULT_POOLSIZE
+    _default_retries = requests.adapters.DEFAULT_RETRIES
+
+    @classmethod
+    def register_options(cls, register):
+      super().register_options(register)
+      # TODO: Pull the `choices` from the registered log levels in the `logging` module!
+      register('--requests-logging-level', choices=['WARNING', 'INFO', 'DEBUG'],
+               # Reduce the somewhat verbose logging of requests.
+               default='WARNING',
+               advanced=True,
+               help='The logging level to set the requests logger to.')
+      register('--max-connection-pools', type=int, default=cls._default_pool_size,
+               help='The max number of separate hosts to maintain urllib3 pools for. '
+                    'Corresponds to `pool_connections` in `requests.adapters.HTTPAdapter`.')
+      register('--max-connections-within-pool', type=int, default=cls._default_pool_size,
+               help='The max number of connections to retain within a single pool. '
+                    'Corresponds to `pool_maxsize` in `requests.adapters.HTTPAdapter`.')
+      register('--max-retries', type=int, default=cls._default_retries,
+               help='The max number of retries to perform for failed artifact cache requests. '
+                    'Corresponds to `max_retries` in in `requests.adapters.HTTPAdapter`.')
+      # TODO: raise an exception if these secondary retry limits exceed --max-retries (which will
+      # just have no effect)?
+      register('--max-retries-on-connection-errors', type=int, default=cls._default_retries,
+               help='The maximum number of retries to perform for requests which fail to connect.'
+                    '\n\n--max-retries takes precedence over this option, so if this number is '
+                    'greater than --max-retries, the additional retries are ignored.')
+      register('--max-retries-on-read-errors', type=int, default=cls._default_retries,
+               help='The maximum number of retries to perform for requests which fail after the '
+                    'request is sent to the server.'
+                    '\n\n--max-retries takes precedence over this option, so if this number is '
+                    'greater than --max-retries, the additional retries are ignored.')
+      register('--blocking-pool', type=bool,
+               help='Whether a connection pool should block instead of creating a new connection '
+                    'when the connection pool is already at its maximum size. '
+                    'Corresponds to `pool_block` in `requests.adapters.HTTPAdapter`.')
+      # TODO: Make a custom option type for timeout lengths which validates that the value is
+      # nonzero, and perhaps parameterized by time unit (seconds, ms, ns?)!
+      register('--slow-download-timeout-seconds', type=int, default=60,
+               help='The time to wait while downloading a cache artifact before printing a warning '
+                    'about a slow artifact download.')
+
+    @classmethod
+    def create(cls, logger):
+      options = cls.global_instance().get_options()
+      level = getattr(logging, options.requests_logging_level)
+      logger.setLevel(level)
+
+      return RequestsSession(
+        max_connection_pools=options.max_connection_pools,
+        max_connections_within_pool=options.max_connections_within_pool,
+        max_retries=options.max_retries,
+        max_retries_on_connection_errors=options.max_retries_on_connection_errors,
+        max_retries_on_read_errors=options.max_retries_on_read_errors,
+        blocking_pool=options.blocking_pool,
+        slow_download_timeout_seconds=options.slow_download_timeout_seconds,
+      )
+
+  @memoized_classmethod
+  def _instance(cls):
+    requests_logger = logging.getLogger('requests')
+    return cls.Factory.create(requests_logger)
+
+  @memoized_classmethod
+  def session(cls):
+    instance = cls._instance()
+
+    session = requests.Session()
+
+    retry_config = Retry(
+      total=instance.max_retries,
+      connect=instance.max_retries_on_connection_errors,
+      read=instance.max_retries_on_read_errors,
+    )
+
+    http_connection_adapter = requests.adapters.HTTPAdapter(
+      pool_connections=instance.max_connection_pools,
+      pool_maxsize=instance.max_connections_within_pool,
+      max_retries=retry_config,
+      pool_block=instance.blocking_pool,
+    )
+
+    session.mount('http://', http_connection_adapter)
+    session.mount('https://', http_connection_adapter)
+
+    return session
 
 
 class RESTfulArtifactCache(ArtifactCache):
@@ -66,6 +173,9 @@ class RESTfulArtifactCache(ArtifactCache):
     if self._localcache.has(cache_key):
       return self._localcache.use_cached_files(cache_key, results_dir)
 
+    # The queue is used as a semaphore here, containing only a single None element. A background
+    # thread is kicked off which waits with the specified timeout for the single queue element, and
+    # prints a warning message if the timeout is breached.
     queue = multiprocessing.Queue()
     try:
       response = self._request('GET', cache_key)
@@ -73,7 +183,7 @@ class RESTfulArtifactCache(ArtifactCache):
         threading.Thread(
           target=_log_if_no_response,
           args=(
-            60,
+            RequestsSession._instance().slow_download_timeout_seconds,
             "\nStill downloading artifacts (either they're very large or the connection to the cache is slow)",
             queue.get,
           )
@@ -86,6 +196,12 @@ class RESTfulArtifactCache(ArtifactCache):
     except Exception as e:
       logger.warning('\nError while reading from remote artifact cache: {0}\n'.format(e))
       queue.put(None)
+      # If we exceed the retry limits, set a global flag to avoid using the cache for the rest of
+      # the pants process lifetime.
+      if isinstance(e, MaxRetryError):
+        logger.warning('\nMaximum retries were exceeded for the current connection pool. Avoiding '
+                       'the remote cache for the rest of the pants process lifetime.\n')
+        RequestsSession._max_retries_exceeded = True
       # TODO(peiyu): clean up partially downloaded local file if any
       return UnreadableArtifact(cache_key, e)
 
@@ -97,8 +213,12 @@ class RESTfulArtifactCache(ArtifactCache):
 
   # Returns a response if we get a 200, None if we get a 404 and raises an exception otherwise.
   def _request(self, method, cache_key, body=None):
+    # If our connection pool has experienced too many retries, we no-op on every successive
+    # artifact download for the rest of the pants process lifetime.
+    if RequestsSession._max_retries_exceeded:
+      return None
 
-    session = RequestsSession.instance()
+    session = RequestsSession.session()
     with self.best_url_selector.select_best_url() as best_url:
       url = self._url_for_key(best_url, cache_key)
       logger.debug('Sending {0} request to {1}'.format(method, url))
