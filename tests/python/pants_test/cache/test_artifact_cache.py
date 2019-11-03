@@ -1,6 +1,7 @@
 # Copyright 2014 Pants project contributors (see CONTRIBUTORS.md).
 # Licensed under the Apache License, Version 2.0 (see LICENSE).
 
+import logging
 import os
 from contextlib import contextmanager
 
@@ -14,12 +15,14 @@ from pants.cache.artifact_cache import (
 )
 from pants.cache.local_artifact_cache import LocalArtifactCache, TempLocalArtifactCache
 from pants.cache.pinger import BestUrlSelector, InvalidRESTfulCacheProtoError
-from pants.cache.restful_artifact_cache import RESTfulArtifactCache
+from pants.cache.restful_artifact_cache import RequestsSession, RESTfulArtifactCache
 from pants.invalidation.build_invalidator import CacheKey
 from pants.testutil.test_base import TestBase
 from pants.util.contextutil import temporary_dir, temporary_file, temporary_file_path
 from pants.util.dirutil import safe_mkdir
+from pants.util.meta import classproperty
 from pants_test.cache.cache_server import cache_server
+from pants_test.subsystem.subsystem_util import init_subsystems
 
 
 TEST_CONTENT1 = b'muppet'
@@ -27,6 +30,10 @@ TEST_CONTENT2 = b'kermit'
 
 
 class TestArtifactCache(TestBase):
+  @classproperty
+  def subsystems(cls):
+    return super().subsystems + (RequestsSession.Factory,)
+
   @contextmanager
   def setup_local_cache(self):
     with temporary_dir() as artifact_root:
@@ -54,11 +61,29 @@ class TestArtifactCache(TestBase):
       f.close()
       yield path
 
+  _cache_retry_defaults = dict(
+    requests_logging_level='WARNING',
+    max_connection_pools=10,
+    max_connections_within_pool=10,
+    max_retries=10,
+    max_retries_on_connection_errors=10,
+    max_retries_on_read_errors=10,
+    blocking_pool=False,
+    slow_download_timeout_seconds=60,
+  )
+
+  def set_cache_retry_options(self, **kwargs):
+    self.set_options_for_scope(RequestsSession.Factory.options_scope, **{
+      **self._cache_retry_defaults,
+      **kwargs,
+    })
+
   def setUp(self):
     super().setUp()
     # Init engine because decompression now goes through native code.
     self._init_engine()
     TarballArtifact.NATIVE_BINARY = self._scheduler._scheduler._native
+    init_subsystems([RequestsSession.Factory])
 
   def test_local_cache(self):
     with self.setup_local_cache() as artifact_cache:
@@ -214,6 +239,45 @@ class TestArtifactCache(TestBase):
       with self.setup_test_file(cache.artifact_root) as path:
         call_insert((cache, key, [path], False))
       self.assertFalse(call_use_cached_files((cache, key, None)))
+
+  def test_noops_after_max_retries_exceeded(self):
+    key = CacheKey('muppet_key', 'fake_hash')
+
+    self.set_cache_retry_options()
+
+    with self.setup_rest_cache() as cache:
+      # Assert that the artifact doesn't exist, then insert it and check that it exists.
+      self.assertFalse(call_use_cached_files((cache, key, None)))
+      with self.setup_test_file(cache.artifact_root) as path:
+        call_insert((cache, key, [path], False))
+      self.assertTrue(call_use_cached_files((cache, key, None)))
+
+      # No failed requests should have occurred yet, so no retries should have been triggered.
+      self.assertFalse(RequestsSession._max_retries_exceeded)
+
+      # Now assert that when max retries are exceeded, the cache returns 404s.
+      RequestsSession._max_retries_exceeded = True
+      self.assertFalse(call_use_cached_files((cache, key, None)))
+      RequestsSession._max_retries_exceeded = False
+      self.assertTrue(call_use_cached_files((cache, key, None)))
+
+  def test_max_retries_exceeded(self):
+    key = CacheKey('muppet_key', 'fake_hash')
+
+    self.set_cache_retry_options(max_retries=1,
+                                 max_retries_on_connection_errors=1,
+                                 max_retries_on_read_errors=1)
+
+    # Assert that the global "retries exceeded" flag is set when retries are exceeded.
+    with self.setup_rest_cache(return_failed='connection-error') as cache:
+      with self.captured_logging(logging.WARNING) as captured:
+        self.assertFalse(call_use_cached_files((cache, key, None)))
+        self.assertTrue(RequestsSession._max_retries_exceeded)
+
+      _, retry_warning = tuple(captured.warnings())
+      self.assertIn(
+        'Maximum retries were exceeded for the current connection pool. Avoiding the remote cache for the rest of the pants process lifetime.',
+        retry_warning)
 
   def test_successful_request_cleans_result_dir(self):
     key = CacheKey('muppet_key', 'fake_hash')

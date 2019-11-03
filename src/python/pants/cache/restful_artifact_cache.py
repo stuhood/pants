@@ -39,6 +39,7 @@ class RequestsSession:
   max_retries: int
   max_retries_on_connection_errors: int
   max_retries_on_read_errors: int
+  backoff_factor: float
   blocking_pool: bool
   slow_download_timeout_seconds: int
 
@@ -48,13 +49,13 @@ class RequestsSession:
   class Factory(Subsystem):
     options_scope = 'http-artifact-cache'
 
-    _default_pool_size = requests.adapters.DEFAULT_POOLSIZE
-    _default_retries = requests.adapters.DEFAULT_RETRIES
+    _default_pool_size = multiprocessing.cpu_count()
+    _default_retries = 0
 
     @classmethod
     def register_options(cls, register):
       super().register_options(register)
-      # TODO: Pull the `choices` from the registered log levels in the `logging` module!
+      # TODO: Pull the `choices` from the registered log levels in the `logging` module somehow!
       register('--requests-logging-level', choices=['WARNING', 'INFO', 'DEBUG'],
                # Reduce the somewhat verbose logging of requests.
                default='WARNING',
@@ -80,6 +81,9 @@ class RequestsSession:
                     'request is sent to the server.'
                     '\n\n--max-retries takes precedence over this option, so if this number is '
                     'greater than --max-retries, the additional retries are ignored.')
+      register('--backoff-factor', type=float, default=0,
+               help='The backoff factor to apply between retry attempts. '
+                    'Set to 0 to disable backoff.')
       register('--blocking-pool', type=bool,
                help='Whether a connection pool should block instead of creating a new connection '
                     'when the connection pool is already at its maximum size. '
@@ -102,6 +106,7 @@ class RequestsSession:
         max_retries=options.max_retries,
         max_retries_on_connection_errors=options.max_retries_on_connection_errors,
         max_retries_on_read_errors=options.max_retries_on_read_errors,
+        backoff_factor=options.backoff_factor,
         blocking_pool=options.blocking_pool,
         slow_download_timeout_seconds=options.slow_download_timeout_seconds,
       )
@@ -121,6 +126,10 @@ class RequestsSession:
       total=instance.max_retries,
       connect=instance.max_retries_on_connection_errors,
       read=instance.max_retries_on_read_errors,
+      redirect=0,
+      backoff_factor=instance.backoff_factor,
+      raise_on_redirect=True,
+      raise_on_status=True,
     )
 
     http_connection_adapter = requests.adapters.HTTPAdapter(
@@ -244,6 +253,11 @@ class RESTfulArtifactCache(ArtifactCache):
         else:
           raise ValueError('Unknown request method {0}'.format(method))
       except RequestException as e:
+        # TODO: Determine if there's a more canonical way to extract a MaxRetryError from a
+        # RequestException.
+        base_exc = e.args[0]
+        if isinstance(base_exc, MaxRetryError):
+          raise base_exc from e
         raise NonfatalArtifactCacheError('Failed to {0} {1}. Error: {2}'
                                          .format(method, url, e))
       # Allow all 2XX responses. E.g., nginx returns 201 on PUT. HEAD may return 204.
