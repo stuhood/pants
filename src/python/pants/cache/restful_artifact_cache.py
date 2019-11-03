@@ -5,6 +5,7 @@ import logging
 import multiprocessing
 import queue
 import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 import requests
@@ -15,6 +16,7 @@ from urllib3.util.retry import Retry
 from pants.cache.artifact_cache import ArtifactCache, NonfatalArtifactCacheError, UnreadableArtifact
 from pants.subsystem.subsystem import Subsystem
 from pants.util.memo import memoized_classmethod
+from pants.util.meta import staticproperty
 
 
 logger = logging.getLogger(__name__)
@@ -115,6 +117,9 @@ class RequestsSession:
   def _instance(cls):
     requests_logger = logging.getLogger('requests')
     return cls.Factory.create(requests_logger)
+
+  def should_check_for_max_retry_error(self) -> bool:
+    return self.max_retries is not None
 
   @memoized_classmethod
   def session(cls):
@@ -220,18 +225,34 @@ class RESTfulArtifactCache(ArtifactCache):
     self._localcache.delete(cache_key)
     self._request('DELETE', cache_key)
 
+  @staticproperty
+  def _has_exceeded_retries() -> bool:
+    return RequestsSession._max_retries_exceeded
+
+  @contextmanager
+  def _request_session(self, method, url):
+    try:
+      logger.debug(f'Sending {method} request to {url}')
+      yield RequestsSession.session()
+    except RequestException as e:
+      if RequestsSession._instance().should_check_for_max_retry_error():
+        # TODO: Determine if there's a more canonical way to extract a MaxRetryError from a
+        # RequestException.
+        base_exc = e.args[0]
+        if isinstance(base_exc, MaxRetryError):
+          raise base_exc from e
+      raise NonfatalArtifactCacheError(f'Failed to {method} {url}. Error: {e}')
+
   # Returns a response if we get a 200, None if we get a 404 and raises an exception otherwise.
   def _request(self, method, cache_key, body=None):
     # If our connection pool has experienced too many retries, we no-op on every successive
     # artifact download for the rest of the pants process lifetime.
-    if RequestsSession._max_retries_exceeded:
+    if self._has_exceeded_retries:
       return None
 
-    session = RequestsSession.session()
     with self.best_url_selector.select_best_url() as best_url:
       url = self._url_for_key(best_url, cache_key)
-      logger.debug('Sending {0} request to {1}'.format(method, url))
-      try:
+      with self._request_session(method, url) as session:
         if 'PUT' == method:
           response = session.put(url,
                                  data=body,
@@ -252,14 +273,7 @@ class RESTfulArtifactCache(ArtifactCache):
                                     allow_redirects=True)
         else:
           raise ValueError('Unknown request method {0}'.format(method))
-      except RequestException as e:
-        # TODO: Determine if there's a more canonical way to extract a MaxRetryError from a
-        # RequestException.
-        base_exc = e.args[0]
-        if isinstance(base_exc, MaxRetryError):
-          raise base_exc from e
-        raise NonfatalArtifactCacheError('Failed to {0} {1}. Error: {2}'
-                                         .format(method, url, e))
+
       # Allow all 2XX responses. E.g., nginx returns 201 on PUT. HEAD may return 204.
       if int(response.status_code / 100) == 2:
         return response

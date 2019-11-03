@@ -3,6 +3,7 @@
 
 import logging
 import os
+import unittest.mock
 from contextlib import contextmanager
 
 import pytest
@@ -68,6 +69,7 @@ class TestArtifactCache(TestBase):
     max_retries=10,
     max_retries_on_connection_errors=10,
     max_retries_on_read_errors=10,
+    backoff_factor=0,
     blocking_pool=False,
     slow_download_timeout_seconds=60,
   )
@@ -77,6 +79,20 @@ class TestArtifactCache(TestBase):
       **self._cache_retry_defaults,
       **kwargs,
     })
+
+  @contextmanager
+  def restore_max_retries_flag(self):
+    try:
+      yield
+    finally:
+      RequestsSession._max_retries_exceeded = False
+
+  @contextmanager
+  def ignore_max_retry_errors(self):
+    with unittest.mock.patch.object(RequestsSession, 'should_check_for_max_retry_error',
+                                    autospec=True, spec_set=True) as check_retries_predicate:
+      check_retries_predicate.return_value = False
+      yield
 
   def setUp(self):
     super().setUp()
@@ -109,7 +125,8 @@ class TestArtifactCache(TestBase):
         artifact_cache = RESTfulArtifactCache(artifact_root,
                                               BestUrlSelector([bad_url, good_server.url], max_failures=0),
                                               local)
-        with self.assertRaises(NonfatalArtifactCacheError) as ex:
+        with self.ignore_max_retry_errors(),\
+             self.assertRaises(NonfatalArtifactCacheError) as ex:
           self.do_test_artifact_cache(artifact_cache)
         self.assertIn('Failed to HEAD', str(ex.exception))
 
@@ -256,9 +273,9 @@ class TestArtifactCache(TestBase):
       self.assertFalse(RequestsSession._max_retries_exceeded)
 
       # Now assert that when max retries are exceeded, the cache returns 404s.
-      RequestsSession._max_retries_exceeded = True
-      self.assertFalse(call_use_cached_files((cache, key, None)))
-      RequestsSession._max_retries_exceeded = False
+      with self.restore_max_retries_flag():
+        RequestsSession._max_retries_exceeded = True
+        self.assertFalse(call_use_cached_files((cache, key, None)))
       self.assertTrue(call_use_cached_files((cache, key, None)))
 
   def test_max_retries_exceeded(self):
@@ -269,10 +286,12 @@ class TestArtifactCache(TestBase):
                                  max_retries_on_read_errors=1)
 
     # Assert that the global "retries exceeded" flag is set when retries are exceeded.
-    with self.setup_rest_cache(return_failed='connection-error') as cache:
-      with self.captured_logging(logging.WARNING) as captured:
-        self.assertFalse(call_use_cached_files((cache, key, None)))
-        self.assertTrue(RequestsSession._max_retries_exceeded)
+    with self.restore_max_retries_flag(),\
+         self.setup_rest_cache(return_failed='connection-error') as cache,\
+         self.captured_logging(logging.WARNING) as captured:
+
+      self.assertFalse(call_use_cached_files((cache, key, None)))
+      self.assertTrue(RequestsSession._max_retries_exceeded)
 
       _, retry_warning = tuple(captured.warnings())
       self.assertIn(
