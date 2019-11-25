@@ -5,6 +5,7 @@ import logging
 import os
 import unittest.mock
 from contextlib import contextmanager
+from typing import Iterator
 
 import pytest
 

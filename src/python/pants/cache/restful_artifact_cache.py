@@ -23,6 +23,12 @@ from pants.util.memo import memoized_classmethod
 logger = logging.getLogger(__name__)
 
 
+class LogLevel(Enum):
+  warning = 'WARNING'
+  info = 'INFO'
+  debug = 'DEBUG'
+
+
 @dataclass(frozen=True)
 class RequestsSession:
   """Configuration for the session object used to fetch HTTP(S) artifact cache entries.
@@ -62,18 +68,13 @@ class RequestsSession:
     # By default, don't perform any retries.
     _default_retries = 0
 
-    class LogLevel(Enum):
-      warning = 'WARNING'
-      info = 'INFO'
-      debug = 'DEBUG'
-
     @classmethod
     def register_options(cls, register):
       super().register_options(register)
       # TODO: Pull the `choices` from the registered log levels in the `logging` module somehow!
-      register('--requests-logging-level', choices=list(cls.LogLevel),
+      register('--requests-logging-level', choices=list(LogLevel),
                # Reduce the somewhat verbose logging of requests.
-               default=cls.LogLevel.warning,
+               default=LogLevel.warning,
                advanced=True,
                help='The logging level to set the requests logger to.')
       register('--max-connection-pools', type=int, default=cls._default_pool_size,
