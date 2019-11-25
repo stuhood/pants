@@ -7,6 +7,8 @@ import queue
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
+from enum import Enum
+from typing import Generator, Optional
 
 import requests
 from requests import RequestException
@@ -16,7 +18,6 @@ from urllib3.util.retry import Retry
 from pants.cache.artifact_cache import ArtifactCache, NonfatalArtifactCacheError, UnreadableArtifact
 from pants.subsystem.subsystem import Subsystem
 from pants.util.memo import memoized_classmethod
-from pants.util.meta import staticproperty
 
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,10 @@ class RequestsSession:
   # Global flag which is set to True if our global connection pool singleton raises a MaxRetryError.
   _max_retries_exceeded = False
 
+  @classmethod
+  def has_exceeded_retries(cls) -> bool:
+    return cls._max_retries_exceeded
+
   class Factory(Subsystem):
     options_scope = 'http-artifact-cache'
 
@@ -57,13 +62,18 @@ class RequestsSession:
     # By default, don't perform any retries.
     _default_retries = 0
 
+    class LogLevel(Enum):
+      warning = 'WARNING'
+      info = 'INFO'
+      debug = 'DEBUG'
+
     @classmethod
     def register_options(cls, register):
       super().register_options(register)
       # TODO: Pull the `choices` from the registered log levels in the `logging` module somehow!
-      register('--requests-logging-level', choices=['WARNING', 'INFO', 'DEBUG'],
+      register('--requests-logging-level', choices=list(cls.LogLevel),
                # Reduce the somewhat verbose logging of requests.
-               default='WARNING',
+               default=cls.LogLevel.warning,
                advanced=True,
                help='The logging level to set the requests logger to.')
       register('--max-connection-pools', type=int, default=cls._default_pool_size,
@@ -100,7 +110,7 @@ class RequestsSession:
                     'about a slow artifact download.')
 
     @classmethod
-    def create(cls, logger):
+    def create(cls, logger) -> 'RequestsSession':
       options = cls.global_instance().get_options()
       level = getattr(logging, options.requests_logging_level)
       logger.setLevel(level)
@@ -117,7 +127,7 @@ class RequestsSession:
       )
 
   @memoized_classmethod
-  def _instance(cls):
+  def _instance(cls) -> 'RequestsSession':
     requests_logger = logging.getLogger('requests')
     return cls.Factory.create(requests_logger)
 
@@ -130,7 +140,7 @@ class RequestsSession:
     return bool(self.max_retries)
 
   @memoized_classmethod
-  def session(cls):
+  def session(cls) -> requests.Session:
     instance = cls._instance()
 
     session = requests.Session()
@@ -178,7 +188,7 @@ class RESTfulArtifactCache(ArtifactCache):
     self._write_timeout_secs = write_timeout
     self._localcache = local
 
-  def try_insert(self, cache_key, paths):
+  def try_insert(self, cache_key, paths) -> None:
     # Delegate creation of artifact to local cache.
     with self._localcache.insert_paths(cache_key, paths) as tarfile:
       # Upload local artifact to remote cache.
@@ -186,7 +196,7 @@ class RESTfulArtifactCache(ArtifactCache):
         if not self._request('PUT', cache_key, body=infile):
           raise NonfatalArtifactCacheError('Failed to PUT {0}.'.format(cache_key))
 
-  def has(self, cache_key):
+  def has(self, cache_key) -> bool:
     if self._localcache.has(cache_key):
       return True
     return self._request('HEAD', cache_key) is not None
@@ -229,16 +239,12 @@ class RESTfulArtifactCache(ArtifactCache):
 
     return False
 
-  def delete(self, cache_key):
+  def delete(self, cache_key) -> None:
     self._localcache.delete(cache_key)
     self._request('DELETE', cache_key)
 
-  @staticproperty
-  def _has_exceeded_retries() -> bool:
-    return RequestsSession._max_retries_exceeded
-
   @contextmanager
-  def _request_session(self, method, url):
+  def _request_session(self, method, url) -> Generator[requests.Session, None, None]:
     try:
       logger.debug(f'Sending {method} request to {url}')
       yield RequestsSession.session()
@@ -252,10 +258,10 @@ class RESTfulArtifactCache(ArtifactCache):
       raise NonfatalArtifactCacheError(f'Failed to {method} {url}. Error: {e}')
 
   # Returns a response if we get a 200, None if we get a 404 and raises an exception otherwise.
-  def _request(self, method, cache_key, body=None):
+  def _request(self, method, cache_key, body=None) -> Optional[requests.Response]:
     # If our connection pool has experienced too many retries, we no-op on every successive
     # artifact download for the rest of the pants process lifetime.
-    if self._has_exceeded_retries:
+    if RequestsSession.has_exceeded_retries():
       return None
 
     with self.best_url_selector.select_best_url() as best_url:
@@ -293,10 +299,10 @@ class RESTfulArtifactCache(ArtifactCache):
                                          .format(method, url,
                                                  response.status_code, response.reason))
 
-  def _url_suffix_for_key(self, cache_key):
+  def _url_suffix_for_key(self, cache_key) -> str:
     return '{0}/{1}.tgz'.format(cache_key.id, cache_key.hash)
 
-  def _url_for_key(self, url, cache_key):
+  def _url_for_key(self, url, cache_key) -> str:
     path_prefix = url.path.rstrip('/')
     path = '{0}/{1}'.format(path_prefix, self._url_suffix_for_key(cache_key))
     return '{0}://{1}{2}'.format(url.scheme, url.netloc, path)

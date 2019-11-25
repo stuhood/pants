@@ -18,12 +18,12 @@ from pants.cache.local_artifact_cache import LocalArtifactCache, TempLocalArtifa
 from pants.cache.pinger import BestUrlSelector, InvalidRESTfulCacheProtoError
 from pants.cache.restful_artifact_cache import RequestsSession, RESTfulArtifactCache
 from pants.invalidation.build_invalidator import CacheKey
+from pants.testutil.subsystem.util import init_subsystems
 from pants.testutil.test_base import TestBase
 from pants.util.contextutil import temporary_dir, temporary_file, temporary_file_path
 from pants.util.dirutil import safe_mkdir
 from pants.util.meta import classproperty
 from pants_test.cache.cache_server import cache_server
-from pants_test.subsystem.subsystem_util import init_subsystems
 
 
 TEST_CONTENT1 = b'muppet'
@@ -63,14 +63,14 @@ class TestArtifactCache(TestBase):
       yield path
 
   @contextmanager
-  def restore_max_retries_flag(self):
+  def restore_max_retries_flag(self) -> Iterator[None]:
     try:
       yield
     finally:
       RequestsSession._max_retries_exceeded = False
 
   @contextmanager
-  def override_check_for_max_retry(self, should_check: bool):
+  def override_check_for_max_retry(self, should_check: bool) -> Iterator[None]:
     patch_opts = dict(autospec=True, spec_set=True)
     with self.restore_max_retries_flag(),\
          unittest.mock.patch.object(RequestsSession, 'should_check_for_max_retry_error',
