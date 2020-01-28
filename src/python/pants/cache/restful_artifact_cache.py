@@ -72,7 +72,7 @@ class RequestsSession:
     def register_options(cls, register):
       super().register_options(register)
       # TODO: Pull the `choices` from the registered log levels in the `logging` module somehow!
-      register('--requests-logging-level', choices=list(LogLevel),
+      register('--requests-logging-level', type=LogLevel, choices=list(LogLevel),
                # Reduce the somewhat verbose logging of requests.
                default=LogLevel.warning,
                advanced=True,
