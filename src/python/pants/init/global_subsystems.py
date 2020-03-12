@@ -5,7 +5,7 @@ from pants.binaries.binary_util import BinaryUtil
 from pants.goal.run_tracker import RunTracker
 from pants.init.repro import Reproducer
 from pants.process.subprocess import Subprocess
-from pants.python.python_repos import PythonRepos
+from pants.backend.python.subsystems.python_repos import PythonRepos
 from pants.reporting.reporting import Reporting
 from pants.scm.subsystems.changed import Changed
 from pants.source.source_root import SourceRootConfig

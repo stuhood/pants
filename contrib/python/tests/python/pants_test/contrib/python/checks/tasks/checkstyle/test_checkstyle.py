@@ -12,7 +12,7 @@ from pants.backend.python.subsystems.python_setup import PythonSetup
 from pants.backend.python.targets.python_library import PythonLibrary
 from pants.base.build_environment import get_buildroot
 from pants.base.exceptions import TaskError
-from pants.python.python_repos import PythonRepos
+from pants.backend.python.subsystems.python_repos import PythonRepos
 from pants.util.contextutil import environment_as
 from pants.util.dirutil import safe_mkdtemp, safe_rmtree
 from pants_test.backend.python.tasks.python_task_test_base import PythonTaskTestBase
