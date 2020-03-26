@@ -46,7 +46,7 @@ class HermeticPex:
     # necessarily the interpreter that PEX will use to execute the generated .pex file.
     # TODO(#7735): Set --python-setup-interpreter-search-paths differently for the host and target
     # platforms, when we introduce platforms in https://github.com/pantsbuild/pants/issues/7735.
-    argv = ('python', pex_path, *pex_args)
+    argv = ('python3', pex_path, *pex_args)
 
     hermetic_env = env.copy() if env else {}
     hermetic_env.update(
