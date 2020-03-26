@@ -31,7 +31,7 @@ class CreatePexFromTargetClosure:
 
 @rule(name="Create PEX from targets")
 async def create_pex_from_target_closure(request: CreatePexFromTargetClosure,
-                                         python_setup: PythonSetup) -> Pex:
+                                         python_setup: PythonSetup) -> CreatePex:
   transitive_hydrated_targets = await Get[TransitiveHydratedTargets](BuildFileAddresses,
                                                                      request.build_file_addresses)
   all_targets = transitive_hydrated_targets.closure
@@ -50,7 +50,7 @@ async def create_pex_from_target_closure(request: CreatePexFromTargetClosure,
     additional_requirements=request.additional_requirements
   )
 
-  create_pex_request = CreatePex(
+  return CreatePex(
     output_filename=request.output_filename,
     requirements=requirements,
     interpreter_constraints=interpreter_constraints,
@@ -58,9 +58,6 @@ async def create_pex_from_target_closure(request: CreatePexFromTargetClosure,
     input_files_digest=chrooted_sources.digest if request.include_source_files else None,
     additional_args=request.additional_args,
   )
-
-  pex = await Get[Pex](CreatePex, create_pex_request)
-  return pex
 
 
 def rules():

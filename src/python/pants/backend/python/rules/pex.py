@@ -20,6 +20,7 @@ from pants.engine.legacy.structs import PythonTargetAdaptor, TargetAdaptor
 from pants.engine.platform import Platform, PlatformConstraint
 from pants.engine.rules import rule, subsystem_rule
 from pants.engine.selectors import Get
+from pants.python.python_repos import PythonRepos
 
 
 @dataclass(frozen=True)
@@ -90,6 +91,7 @@ async def create_pex(
     request: CreatePex,
     pex_bin: DownloadedPexBin,
     python_setup: PythonSetup,
+    python_repos: PythonRepos,
     subprocess_encoding_environment: SubprocessEncodingEnvironment,
     pex_build_environment: PexBuildEnvironment,
     platform: Platform,
@@ -105,6 +107,12 @@ async def create_pex(
 
   source_dir_name = 'source_files'
   argv.append(f'--sources-directory={source_dir_name}')
+
+  argv.extend([
+      '--no-pypi',
+      *(f'--index={url}' for url in python_repos.indexes),
+      *(f'--find-links={url}' for url in python_repos.repos),
+  ])
 
   argv.extend(request.requirements.requirements)
 
@@ -148,4 +156,5 @@ def rules():
   return [
     create_pex,
     subsystem_rule(PythonSetup),
+    subsystem_rule(PythonRepos),
   ]
