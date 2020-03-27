@@ -105,6 +105,8 @@ async def create_pex(
   argv.extend(request.interpreter_constraints.generate_pex_arg_list())
   argv.extend(request.additional_args)
 
+  argv.append('--no-compile')
+
   source_dir_name = 'source_files'
   argv.append(f'--sources-directory={source_dir_name}')
 
