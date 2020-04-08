@@ -623,6 +623,7 @@ function build_pex() {
   # from polluting stderr we pass `--no-emit-warnings`.
   execute_pex \
     -o "${dest}" \
+    -vvvvvvvvv \
     --no-emit-warnings \
     --no-strip-pex-env \
     --script=pants \
