@@ -2,9 +2,8 @@
 # Licensed under the Apache License, Version 2.0 (see LICENSE).
 
 from enum import Enum
-from typing import Callable, List
 
-from pants.engine.rules import rule
+from pants.engine.rules import RootRule
 from pants.util.memo import memoized_classproperty
 from pants.util.osutil import get_normalized_os_name
 
@@ -29,12 +28,5 @@ class PlatformConstraint(Enum):
         return PlatformConstraint(Platform.current.value)
 
 
-# TODO We will want to allow users to specify the execution platform for rules,
-# which means replacing this singleton rule with a RootRule populated by an option.
-@rule
-def materialize_platform() -> Platform:
-    return Platform.current
-
-
-def create_platform_rules() -> List[Callable]:
-    return [materialize_platform]
+def create_platform_rules():
+    return [RootRule(Platform)]

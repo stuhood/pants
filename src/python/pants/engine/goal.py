@@ -7,8 +7,8 @@ from dataclasses import dataclass
 from typing import ClassVar, Tuple, Type
 
 from pants.cache.cache_setup import CacheSetup
+from pants.option.is_v2_exclusive import is_v2_exclusive
 from pants.option.optionable import Optionable
-from pants.option.options_bootstrapper import is_v2_exclusive
 from pants.option.scope import ScopeInfo
 from pants.subsystem.subsystem_client_mixin import SubsystemClientMixin
 from pants.util.meta import classproperty

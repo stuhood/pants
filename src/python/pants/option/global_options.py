@@ -16,6 +16,7 @@ from pants.base.build_environment import (
     pants_version,
 )
 from pants.base.deprecated import deprecated_conditional
+from pants.engine.platform import Platform
 from pants.option.custom_types import dir_option
 from pants.option.errors import OptionsError
 from pants.option.scope import GLOBAL_SCOPE, ScopeInfo
@@ -81,10 +82,11 @@ class ExecutionOptions:
     allowing Subsystems to be consumed before the Scheduler has been created).
     """
 
-    remote_execution: Any
+    remote_execution: bool
     remote_store_server: Any
     remote_store_thread_count: Any
     remote_execution_server: Any
+    remote_execution_platform: Platform
     remote_store_chunk_bytes: Any
     remote_store_chunk_upload_timeout_seconds: Any
     remote_store_rpc_retries: Any
@@ -104,12 +106,17 @@ class ExecutionOptions:
     process_execution_local_enable_nailgun: bool
     experimental_fs_watcher: bool
 
+    @property
+    def platform(self) -> Platform:
+        return self.remote_execution_platform if self.remote_execution else Platform.current
+
     @classmethod
     def from_bootstrap_options(cls, bootstrap_options):
         return cls(
             remote_execution=bootstrap_options.remote_execution,
             remote_store_server=bootstrap_options.remote_store_server,
             remote_execution_server=bootstrap_options.remote_execution_server,
+            remote_execution_platform=bootstrap_options.remote_execution_platform,
             remote_store_thread_count=bootstrap_options.remote_store_thread_count,
             remote_store_chunk_bytes=bootstrap_options.remote_store_chunk_bytes,
             remote_store_chunk_upload_timeout_seconds=bootstrap_options.remote_store_chunk_upload_timeout_seconds,
@@ -137,6 +144,7 @@ DEFAULT_EXECUTION_OPTIONS = ExecutionOptions(
     remote_store_server=[],
     remote_store_thread_count=1,
     remote_execution_server=None,
+    remote_execution_platform=Platform.linux,
     remote_store_chunk_bytes=1024 * 1024,
     remote_store_chunk_upload_timeout_seconds=60,
     remote_store_rpc_retries=2,
@@ -763,6 +771,13 @@ class GlobalOptions(Subsystem):
             "--remote-execution-server",
             advanced=True,
             help="host:port of grpc server to use as remote execution scheduler.",
+        )
+        register(
+            "--remote-execution-platform",
+            advanced=True,
+            type=Platform,
+            default=DEFAULT_EXECUTION_OPTIONS.remote_execution_platform,
+            help="The platform of workers in the remote execution cluster.",
         )
         register(
             "--remote-store-chunk-bytes",

@@ -233,6 +233,10 @@ class LegacyGraphSession:
         workspace = Workspace(self.scheduler_session)
         interactive_runner = InteractiveRunner(self.scheduler_session)
 
+        execution_options = ExecutionOptions.from_bootstrap_options(
+            options_bootstrapper.bootstrap_options.for_global_scope()
+        )
+
         for goal in goals:
             goal_product = self.goal_map[goal]
             # NB: We no-op for goals that have no V2 implementation because no relevant backends are
@@ -245,7 +249,12 @@ class LegacyGraphSession:
             if not is_implemented:
                 continue
             params = Params(
-                specs.provided_specs, options_bootstrapper, console, workspace, interactive_runner,
+                specs.provided_specs,
+                options_bootstrapper,
+                console,
+                workspace,
+                interactive_runner,
+                execution_options.platform,
             )
             logger.debug(f"requesting {goal_product} to satisfy execution of `{goal}` goal")
             try:
