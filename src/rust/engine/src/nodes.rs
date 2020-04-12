@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0 (see LICENSE).
 
 use std::collections::{BTreeMap, HashMap};
-use std::convert::TryFrom;
+use std::convert::{TryFrom, TryInto};
 use std::fmt::Display;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -303,8 +303,8 @@ impl MultiPlatformExecuteProcess {
   pub fn lift(value: &Value) -> Result<MultiPlatformExecuteProcess, String> {
     let constraints = externs::project_multi_strs(&value, "platform_constraints")
       .into_iter()
-      .map(|constraint| PlatformConstraint::try_from(&constraint))
-      .collect::<Result<Vec<_>, _>>()?;
+      .map(|constraint| Ok(constraint.as_str().try_into()?))
+      .collect::<Result<Vec<_>, String>>()?;
     let processes = externs::project_multi(&value, "processes");
     if constraints.len() != processes.len() {
       return Err(format!(

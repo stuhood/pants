@@ -194,9 +194,6 @@ impl CommandRunner {
   }
 }
 
-// TODO(pantsbuild/pants#8039) Need to impl Drop on command runner  so that when the BoxFuture goes out of scope
-// we cancel a potential RPC. So we need to distinguish local vs. remote
-// requests and save enough state to BoxFuture or another abstraction around our execution results
 impl super::CommandRunner for CommandRunner {
   fn extract_compatible_request(&self, req: &MultiPlatformProcess) -> Option<Process> {
     for compatible_constraint in vec![PlatformConstraint::None, self.platform.into()].iter() {

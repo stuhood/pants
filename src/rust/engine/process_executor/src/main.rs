@@ -33,9 +33,9 @@ use process_execution;
 use clap::{value_t, App, AppSettings, Arg};
 use futures::compat::Future01CompatExt;
 use hashing::{Digest, Fingerprint};
-use process_execution::{Context, Platform, PlatformConstraint, ProcessMetadata, RelativePath};
+use process_execution::{Context, Platform, ProcessMetadata, RelativePath};
 use std::collections::{BTreeMap, BTreeSet};
-use std::convert::TryFrom;
+use std::convert::TryInto;
 use std::iter::{FromIterator, Iterator};
 use std::path::PathBuf;
 use std::process::exit;
@@ -338,10 +338,11 @@ async fn main() {
     unsafe_local_only_files_because_we_favor_speed_over_correctness_for_this_rule:
       hashing::EMPTY_DIGEST,
     jdk_home: args.value_of("jdk").map(PathBuf::from),
-    target_platform: PlatformConstraint::try_from(
-      &args.value_of("target-platform").unwrap().to_string(),
-    )
-    .expect("invalid value for `target-platform"),
+    target_platform: args
+      .value_of("target-platform")
+      .unwrap()
+      .try_into()
+      .expect("invalid value for `target-platform"),
     is_nailgunnable,
   };
 

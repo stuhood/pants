@@ -72,6 +72,7 @@ impl Core {
     remote_execution: bool,
     remote_store_servers: Vec<String>,
     remote_execution_server: Option<String>,
+    remote_execution_platform: Platform,
     remote_execution_process_cache_namespace: Option<String>,
     remote_instance_name: Option<String>,
     remote_root_ca_certs_path: Option<PathBuf>,
@@ -198,9 +199,7 @@ impl Core {
             oauth_bearer_token,
             remote_execution_headers,
             store.clone(),
-            // TODO if we ever want to configure the remote platform to be something else we
-            // need to take an option all the way down here and into the remote::CommandRunner struct.
-            Platform::Linux,
+            remote_execution_platform,
             executor.clone(),
             std::time::Duration::from_secs(300),
             std::time::Duration::from_millis(500),

@@ -50,8 +50,12 @@ use log::{error, warn, Log};
 use logging::logger::LOGGER;
 use logging::{Destination, Logger};
 use rule_graph::RuleGraph;
+use tempfile::TempDir;
+use workunit_store::WorkUnit;
+
 use std::any::Any;
 use std::borrow::Borrow;
+use std::convert::TryInto;
 use std::ffi::CStr;
 use std::fs::File;
 use std::io;
@@ -60,8 +64,6 @@ use std::os::raw;
 use std::panic;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-use tempfile::TempDir;
-use workunit_store::WorkUnit;
 
 #[cfg(test)]
 mod tests;
@@ -190,6 +192,7 @@ pub extern "C" fn scheduler_create(
   remote_execution: bool,
   remote_store_servers_buf: BufferBuffer,
   remote_execution_server: Buffer,
+  remote_execution_platform: Buffer,
   remote_execution_process_cache_namespace: Buffer,
   remote_instance_name: Buffer,
   remote_root_ca_certs_path_buffer: Buffer,
@@ -221,6 +224,7 @@ pub extern "C" fn scheduler_create(
     remote_execution,
     remote_store_servers_buf,
     remote_execution_server,
+    remote_execution_platform,
     remote_execution_process_cache_namespace,
     remote_instance_name,
     remote_root_ca_certs_path_buffer,
@@ -265,6 +269,7 @@ fn make_core(
   remote_execution: bool,
   remote_store_servers_buf: BufferBuffer,
   remote_execution_server: Buffer,
+  remote_execution_platform: Buffer,
   remote_execution_process_cache_namespace: Buffer,
   remote_instance_name: Buffer,
   remote_root_ca_certs_path_buffer: Buffer,
@@ -300,6 +305,9 @@ fn make_core(
   let remote_execution_server_string = remote_execution_server
     .to_string()
     .map_err(|err| format!("remote_execution_server was not valid UTF8: {}", err))?;
+  let remote_execution_platform_string = remote_execution_platform
+    .to_string()
+    .map_err(|err| format!("remote_execution_platform was not valid UTF8: {}", err))?;
   let remote_execution_process_cache_namespace_string = remote_execution_process_cache_namespace
     .to_string()
     .map_err(|err| {
@@ -367,6 +375,7 @@ fn make_core(
     } else {
       Some(remote_execution_server_string)
     },
+    remote_execution_platform_string.as_str().try_into()?,
     if remote_execution_process_cache_namespace_string.is_empty() {
       None
     } else {

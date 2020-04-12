@@ -107,19 +107,20 @@ impl From<Platform> for PlatformConstraint {
   }
 }
 
-impl TryFrom<&String> for PlatformConstraint {
+impl TryFrom<&str> for PlatformConstraint {
   type Error = String;
   ///
   /// This is a helper method to convert values from the python/engine/platform.py::PlatformConstraint enum,
   /// which have been serialized, into the rust PlatformConstraint enum.
   ///
-  fn try_from(variant_candidate: &String) -> Result<Self, Self::Error> {
-    match variant_candidate.as_ref() {
+  ///
+  fn try_from(variant_candidate: &str) -> Result<Self, Self::Error> {
+    match variant_candidate {
       "darwin" => Ok(PlatformConstraint::Darwin),
       "linux" => Ok(PlatformConstraint::Linux),
       "none" => Ok(PlatformConstraint::None),
       other => Err(format!(
-        "Unknown, platform {:?} encountered in parsing",
+        "Unknown platform constraint {:?} encountered in parsing",
         other
       )),
     }
@@ -131,6 +132,20 @@ impl From<Platform> for String {
     match platform {
       Platform::Linux => "linux".to_string(),
       Platform::Darwin => "darwin".to_string(),
+    }
+  }
+}
+
+impl TryFrom<&str> for Platform {
+  type Error = String;
+  fn try_from(platform: &str) -> Result<Self, Self::Error> {
+    match platform {
+      "linux" => Ok(Platform::Linux),
+      "darwin" => Ok(Platform::Darwin),
+      other => Err(format!(
+        "Unknown platform {:?} encountered in parsing",
+        other
+      )),
     }
   }
 }
