@@ -27,7 +27,7 @@ from pants.engine.fs import (
     PathGlobs,
     Snapshot,
 )
-from pants.engine.isolated_process import MultiPlatformProcess, ProcessResult
+from pants.engine.isolated_process import Process, ProcessResult
 from pants.engine.legacy.structs import PythonTargetAdaptor, TargetAdaptor
 from pants.engine.platform import Platform, PlatformConstraint
 from pants.engine.rules import RootRule, named_rule, rule, subsystem_rule
@@ -290,7 +290,6 @@ async def create_pex(
     python_repos: PythonRepos,
     subprocess_encoding_environment: SubprocessEncodingEnvironment,
     pex_build_environment: PexBuildEnvironment,
-    platform: Platform,
     log_level: LogLevel,
 ) -> Pex:
     """Returns a PEX with the given requirements, optional entry point, optional interpreter
@@ -359,36 +358,23 @@ async def create_pex(
         )
     )
 
-    # NB: PEX outputs are platform dependent so in order to get a PEX that we can use locally, without
-    # cross-building, we specify that our PEX command be run on the current local platform. When we
-    # support cross-building through CLI flags we can configure requests that build a PEX for our
-    # local platform that are able to execute on a different platform, but for now in order to
-    # guarantee correct build we need to restrict this command to execute on the same platform type
-    # that the output is intended for. The correct way to interpret the keys
-    # (execution_platform_constraint, target_platform_constraint) of this dictionary is "The output of
-    # this command is intended for `target_platform_constraint` iff it is run on `execution_platform
-    # constraint`".
     description = request.description
     if description is None:
         if request.requirements.requirements:
             description = f"Resolving {', '.join(request.requirements.requirements)}"
         else:
             description = f"Building PEX"
-    process = MultiPlatformProcess(
-        {
-            PlatformConstraint(platform.value): pex_bin.create_execute_request(
-                python_setup=python_setup,
-                subprocess_encoding_environment=subprocess_encoding_environment,
-                pex_build_environment=pex_build_environment,
-                pex_args=argv,
-                input_files=merged_digest,
-                description=description,
-                output_files=(request.output_filename,),
-            )
-        }
-    )
 
-    result = await Get[ProcessResult](MultiPlatformProcess, process)
+    process = pex_bin.create_execute_request(
+        python_setup=python_setup,
+        subprocess_encoding_environment=subprocess_encoding_environment,
+        pex_build_environment=pex_build_environment,
+        pex_args=argv,
+        input_files=merged_digest,
+        description=description,
+        output_files=(request.output_filename,),
+    )
+    result = await Get[ProcessResult](Process, process)
 
     if pex_debug.might_log:
         lines = result.stderr.decode().splitlines()
