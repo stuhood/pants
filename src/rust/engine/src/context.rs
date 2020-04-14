@@ -12,7 +12,6 @@ use futures::compat::Future01CompatExt;
 use futures01::Future;
 
 use crate::core::{Failure, TypeId};
-use crate::handles::maybe_drop_handles;
 use crate::intrinsics::Intrinsics;
 use crate::nodes::{NodeKey, WrappedNode};
 use crate::scheduler::Session;
@@ -315,8 +314,6 @@ impl Context {
   /// Get the future value for the given Node implementation.
   ///
   pub fn get<N: WrappedNode>(&self, node: N) -> BoxFuture<N::Item, Failure> {
-    // TODO: Odd place for this... could do it periodically in the background?
-    maybe_drop_handles();
     let result = if let Some(entry_id) = self.entry_id {
       self.core.graph.get(entry_id, self, node.into()).to_boxed()
     } else {

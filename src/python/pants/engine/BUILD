@@ -262,7 +262,6 @@ python_library(
     ':interactive_runner',
     ':isolated_process',
     ':selectors',
-    '3rdparty/python:cffi',
     '3rdparty/python:setuptools',
     'src/python/pants/binaries',
     'src/python/pants/util:dirutil',

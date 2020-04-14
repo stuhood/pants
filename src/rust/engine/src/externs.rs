@@ -1,178 +1,187 @@
-// Copyright 2017 Pants project contributors (see CONTRIBUTORS.md).
+// Copyright 2020 Pants project contributors (see CONTRIBUTORS.md).
 // Licensed under the Apache License, Version 2.0 (see LICENSE).
 
-use std::ffi::OsStr;
-use std::ffi::OsString;
+// File-specific allowances to silence internal warnings of `py_class!`.
+#![allow(
+  clippy::used_underscore_binding,
+  clippy::transmute_ptr_to_ptr,
+  clippy::zero_ptr
+)]
+
+use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::fmt;
-use std::mem;
-use std::os::raw;
-use std::os::unix::ffi::{OsStrExt, OsStringExt};
-use std::string::FromUtf8Error;
 
 use crate::core::{Failure, Function, Key, TypeId, Value};
-use crate::handles::{DroppingHandle, Handle};
 use crate::interning::Interns;
+
+use cpython::{
+  py_class, CompareOp, FromPyObject, GILProtected, ObjectProtocol, PyBool, PyBytes, PyClone,
+  PyDict, PyErr, PyObject, PyResult as CPyResult, PyString, PyTuple, PyType, Python, PythonObject,
+  ToPyObject,
+};
 use itertools::Itertools;
 use lazy_static::lazy_static;
-use parking_lot::RwLock;
-use std::collections::BTreeMap;
 
 /// Return the Python value None.
-pub fn none() -> Handle {
-  with_externs(|e| (e.clone_val)(e.context, &e.none))
+pub fn none() -> PyObject {
+  let gil = Python::acquire_gil();
+  gil.python().None()
 }
 
 pub fn get_value_from_type_id(ty: TypeId) -> Value {
-  with_externs(|e| {
-    let handle = (e.get_handle_from_type_id)(e.context, ty);
-    Value::new(handle)
-  })
+  let gil = Python::acquire_gil();
+  let py = gil.python();
+  let interns = INTERNS.get(py).borrow();
+  Value::from(interns.type_get(&ty).clone_ref(py).into_object())
 }
 
 pub fn get_type_for(val: &Value) -> TypeId {
-  with_externs(|e| (e.get_type_for)(e.context, val as &Handle))
+  let gil = Python::acquire_gil();
+  let py = gil.python();
+  let py_type = val.get_type(py);
+  let mut interns = INTERNS.get(py).borrow_mut();
+  interns.type_insert(py, py_type)
 }
 
 pub fn is_union(ty: TypeId) -> bool {
-  with_externs(|e| (e.is_union)(e.context, ty))
+  with_externs(|py, e| {
+    let interns = INTERNS.get(py).borrow();
+    let py_type = interns.type_get(&ty);
+    e.call_method(py, "is_union", (py_type,), None)
+      .unwrap()
+      .cast_as::<PyBool>(py)
+      .unwrap()
+      .is_true()
+  })
 }
 
-pub fn identify(val: &Value) -> Ident {
-  with_externs(|e| (e.identify)(e.context, val as &Handle))
+pub fn equals(h1: &PyObject, h2: &PyObject) -> bool {
+  let gil = Python::acquire_gil();
+  h1.rich_compare(gil.python(), h2, CompareOp::Eq)
+    .unwrap()
+    .cast_as::<PyBool>(gil.python())
+    .unwrap()
+    .is_true()
 }
 
-pub fn equals(h1: &Handle, h2: &Handle) -> bool {
-  with_externs(|e| (e.equals)(e.context, h1, h2))
+pub fn type_for(py: Python, py_type: PyType) -> TypeId {
+  let mut interns = INTERNS.get(py).borrow_mut();
+  interns.type_insert(py, py_type)
 }
 
-pub fn key_for(val: Value) -> Key {
-  let mut interns = INTERNS.write();
-  interns.insert(val)
+pub fn acquire_key_for(val: Value) -> Result<Key, Failure> {
+  let gil = Python::acquire_gil();
+  let py = gil.python();
+  key_for(py, val).map_err(|e| Failure::from_py_err(py, e))
+}
+
+pub fn key_for(py: Python, val: Value) -> Result<Key, PyErr> {
+  let mut interns = INTERNS.get(py).borrow_mut();
+  interns.key_insert(py, val)
 }
 
 pub fn val_for(key: &Key) -> Value {
-  let interns = INTERNS.read();
-  interns.get(key).clone()
+  let gil = Python::acquire_gil();
+  let interns = INTERNS.get(gil.python()).borrow();
+  interns.key_get(key).clone()
 }
 
-pub fn clone_val(handle: &Handle) -> Handle {
-  with_externs(|e| (e.clone_val)(e.context, handle))
-}
-
-pub fn drop_handles(handles: &[DroppingHandle]) {
-  with_externs(|e| (e.drop_handles)(e.context, handles.as_ptr(), handles.len() as u64))
-}
-
-pub fn store_tuple(values: &[Value]) -> Value {
-  let handles: Vec<_> = values
-    .iter()
-    .map(|v| v as &Handle as *const Handle)
+pub fn store_tuple(values: Vec<Value>) -> Value {
+  let gil = Python::acquire_gil();
+  let arg_handles: Vec<_> = values
+    .into_iter()
+    .map(|v| v.consume_into_py_object(gil.python()))
     .collect();
-  with_externs(|e| (e.store_tuple)(e.context, handles.as_ptr(), handles.len() as u64).into())
-}
-
-#[allow(dead_code)]
-pub fn store_set<I: Iterator<Item = Value>>(values: I) -> Value {
-  let handles: Vec<_> = values.map(|v| &v as &Handle as *const Handle).collect();
-  with_externs(|e| (e.store_set)(e.context, handles.as_ptr(), handles.len() as u64).into())
+  Value::from(PyTuple::new(gil.python(), &arg_handles).into_object())
 }
 
 /// Store a slice containing 2-tuples of (key, value) as a Python dictionary.
-pub fn store_dict(keys_and_values: &[(Value, Value)]) -> Value {
-  let handles: Vec<_> = keys_and_values
-    .iter()
-    .flat_map(|(k, v)| vec![k, v].into_iter())
-    .map(|v| v as &Handle as *const Handle)
-    .collect();
-  with_externs(|e| (e.store_dict)(e.context, handles.as_ptr(), handles.len() as u64).into())
+pub fn store_dict(keys_and_values: Vec<(Value, Value)>) -> Result<Value, PyErr> {
+  let gil = Python::acquire_gil();
+  let py = gil.python();
+  let dict = PyDict::new(py);
+  for (k, v) in keys_and_values {
+    dict.set_item(
+      gil.python(),
+      k.consume_into_py_object(py),
+      v.consume_into_py_object(py),
+    )?;
+  }
+  Ok(Value::from(dict.into_object()))
 }
 
 ///
 /// Store an opqaue buffer of bytes to pass to Python. This will end up as a Python `bytes`.
 ///
 pub fn store_bytes(bytes: &[u8]) -> Value {
-  with_externs(|e| (e.store_bytes)(e.context, bytes.as_ptr(), bytes.len() as u64).into())
+  let gil = Python::acquire_gil();
+  Value::from(PyBytes::new(gil.python(), bytes).into_object())
 }
 
 ///
 /// Store an buffer of utf8 bytes to pass to Python. This will end up as a Python `unicode`.
 ///
 pub fn store_utf8(utf8: &str) -> Value {
-  with_externs(|e| (e.store_utf8)(e.context, utf8.as_ptr(), utf8.len() as u64).into())
-}
-
-///
-/// Store a buffer of utf8 bytes to pass to Python. This will end up as a Python `unicode`.
-///
-#[cfg(unix)]
-pub fn store_utf8_osstr(utf8: &OsStr) -> Value {
-  let bytes = utf8.as_bytes();
-  with_externs(|e| (e.store_utf8)(e.context, bytes.as_ptr(), bytes.len() as u64).into())
+  let gil = Python::acquire_gil();
+  Value::from(utf8.to_py_object(gil.python()).into_object())
 }
 
 pub fn store_u64(val: u64) -> Value {
-  with_externs(|e| (e.store_u64)(e.context, val).into())
+  let gil = Python::acquire_gil();
+  Value::from(val.to_py_object(gil.python()).into_object())
 }
 
 pub fn store_i64(val: i64) -> Value {
-  with_externs(|e| (e.store_i64)(e.context, val).into())
+  let gil = Python::acquire_gil();
+  Value::from(val.to_py_object(gil.python()).into_object())
 }
 
-#[allow(dead_code)]
-pub fn store_f64(val: f64) -> Value {
-  with_externs(|e| (e.store_f64)(e.context, val).into())
-}
-
-#[allow(dead_code)]
 pub fn store_bool(val: bool) -> Value {
-  with_externs(|e| (e.store_bool)(e.context, val).into())
+  let gil = Python::acquire_gil();
+  Value::from(val.to_py_object(gil.python()).into_object())
+}
+
+///
+/// Gets an attribute of the given value as the given type.
+///
+pub fn getattr<T>(value: &Value, field: &str) -> Result<T, String>
+where
+  for<'a> T: FromPyObject<'a>,
+{
+  let gil = Python::acquire_gil();
+  let py = gil.python();
+  value
+    .getattr(py, field)
+    .map_err(|e| format!("Could not get field `{}`: {:?}", field, e))?
+    .extract::<T>(py)
+    .map_err(|e| {
+      format!(
+        "Field `{}` was not convertible to type {}: {:?}",
+        field,
+        core::any::type_name::<T>(),
+        e
+      )
+    })
 }
 
 ///
 /// Pulls out the value specified by the field name from a given Value
 ///
 pub fn project_ignoring_type(value: &Value, field: &str) -> Value {
-  with_externs(|e| {
-    (e.project_ignoring_type)(
-      e.context,
-      value as &Handle,
-      field.as_ptr(),
-      field.len() as u64,
-    )
-    .into()
-  })
+  getattr(value, field).unwrap()
 }
 
 pub fn project_multi(value: &Value, field: &str) -> Vec<Value> {
-  with_externs(|e| {
-    (e.project_multi)(
-      e.context,
-      value as &Handle,
-      field.as_ptr(),
-      field.len() as u64,
-    )
-    .to_vec()
-  })
+  getattr(value, field).unwrap()
 }
 
 pub fn project_bool(value: &Value, field: &str) -> bool {
-  with_externs(|e| {
-    let named_val: Value = (e.project_ignoring_type)(
-      e.context,
-      value as &Handle,
-      field.as_ptr(),
-      field.len() as u64,
-    )
-    .into();
-    (e.val_to_bool)(e.context, &named_val as &Handle)
-  })
+  getattr(value, field).unwrap()
 }
 
-pub fn project_multi_strs(item: &Value, field: &str) -> Vec<String> {
-  project_multi(item, field)
-    .iter()
-    .map(|v| val_to_str(v))
-    .collect()
+pub fn project_multi_strs(value: &Value, field: &str) -> Vec<String> {
+  getattr(value, field).unwrap()
 }
 
 // This is intended for projecting environment variable maps - i.e. Python Dict[str, str] that are
@@ -190,29 +199,25 @@ pub fn project_tuple_encoded_map(
 }
 
 pub fn project_str(value: &Value, field: &str) -> String {
-  let name_val = with_externs(|e| {
-    (e.project_ignoring_type)(
-      e.context,
-      value as &Handle,
-      field.as_ptr(),
-      field.len() as u64,
-    )
-    .into()
-  });
-  val_to_str(&name_val)
+  // TODO: It's possible to view a python string as a `Cow<str>`, so we could avoid actually
+  // cloning in some cases.
+  // TODO: We can't directly extract as a string here, because val_to_str defaults to empty string
+  // for None.
+  val_to_str(&getattr(value, field).unwrap())
+}
+
+pub fn project_u64(value: &Value, field: &str) -> u64 {
+  getattr(value, field).unwrap()
+}
+
+pub fn project_f64(value: &Value, field: &str) -> f64 {
+  getattr(value, field).unwrap()
 }
 
 pub fn project_bytes(value: &Value, field: &str) -> Vec<u8> {
-  let name_val = with_externs(|e| {
-    (e.project_ignoring_type)(
-      e.context,
-      value as &Handle,
-      field.as_ptr(),
-      field.len() as u64,
-    )
-    .into()
-  });
-  val_to_bytes(&name_val)
+  // TODO: It's possible to view a python bytes as a `&[u8]`, so we could avoid actually
+  // cloning in some cases.
+  getattr(value, field).unwrap()
 }
 
 pub fn key_to_str(key: &Key) -> String {
@@ -220,79 +225,81 @@ pub fn key_to_str(key: &Key) -> String {
 }
 
 pub fn type_to_str(type_id: TypeId) -> String {
-  with_externs(|e| {
-    (e.type_to_str)(e.context, type_id)
-      .to_string()
-      .unwrap_or_else(|e| format!("<failed to decode unicode for {:?}: {}>", type_id, e))
-  })
-}
-
-pub fn val_to_bytes(val: &Value) -> Vec<u8> {
-  with_externs(|e| (e.val_to_bytes)(e.context, val as &Handle).to_bytes())
+  project_str(&get_value_from_type_id(type_id), "__name__")
 }
 
 pub fn val_to_str(val: &Value) -> String {
-  with_externs(|e| {
-    (e.val_to_str)(e.context, val as &Handle)
-      .to_string()
-      .unwrap_or_else(|e| format!("<failed to decode unicode for {:?}: {}>", val, e))
+  // TODO: to_string(py) returns a Cow<str>, so we could avoid actually cloning in some cases.
+  with_externs(|py, e| {
+    e.call_method(py, "val_to_str", (val as &PyObject,), None)
+      .unwrap()
+      .cast_as::<PyString>(py)
+      .unwrap()
+      .to_string(py)
+      .map(|cow| cow.into_owned())
+      .unwrap()
   })
 }
 
 pub fn create_exception(msg: &str) -> Value {
-  with_externs(|e| (e.create_exception)(e.context, msg.as_ptr(), msg.len() as u64).into())
+  Value::from(with_externs(|py, e| e.call_method(py, "create_exception", (msg,), None)).unwrap())
 }
 
 pub fn call_method(value: &Value, method: &str, args: &[Value]) -> Result<Value, Failure> {
-  call(&project_ignoring_type(&value, method), args)
+  let arg_handles: Vec<PyObject> = args.iter().map(|v| v.clone().into()).collect();
+  let gil = Python::acquire_gil();
+  let args_tuple = PyTuple::new(gil.python(), &arg_handles);
+  value
+    .call_method(gil.python(), method, args_tuple, None)
+    .map(Value::from)
+    .map_err(|py_err| Failure::from_py_err(gil.python(), py_err))
 }
 
 pub fn call(func: &Value, args: &[Value]) -> Result<Value, Failure> {
-  let arg_handles: Vec<_> = args.iter().map(|v| v as &Handle as *const Handle).collect();
-  with_externs(|e| {
-    (e.call)(
-      e.context,
-      func as &Handle,
-      arg_handles.as_ptr(),
-      args.len() as u64,
-    )
-  })
-  .into()
+  let arg_handles: Vec<PyObject> = args.iter().map(|v| v.clone().into()).collect();
+  let gil = Python::acquire_gil();
+  let args_tuple = PyTuple::new(gil.python(), &arg_handles);
+  func
+    .call(gil.python(), args_tuple, None)
+    .map(Value::from)
+    .map_err(|py_err| Failure::from_py_err(gil.python(), py_err))
 }
 
 pub fn generator_send(generator: &Value, arg: &Value) -> Result<GeneratorResponse, Failure> {
-  let response =
-    with_externs(|e| (e.generator_send)(e.context, generator as &Handle, arg as &Handle));
-  match response {
-    PyGeneratorResponse::Broke(h) => Ok(GeneratorResponse::Break(Value::new(h))),
-    PyGeneratorResponse::Throw(h) => Err(PyResult::failure_from(Value::new(h))),
-    PyGeneratorResponse::Get(product, handle, ident, declared_subject) => {
-      let mut interns = INTERNS.write();
-      let g = Get {
-        product,
-        subject: interns.insert_with(Value::new(handle), ident),
-        declared_subject: Some(declared_subject),
-      };
-      Ok(GeneratorResponse::Get(g))
-    }
-    PyGeneratorResponse::GetMulti(products, handles, identities) => {
-      let mut interns = INTERNS.write();
-      let products = products.to_vec();
-      let identities = identities.to_vec();
-      let values = handles.to_vec();
-      assert_eq!(products.len(), values.len());
-      let gets: Vec<Get> = products
-        .into_iter()
-        .zip(values.into_iter())
-        .zip(identities.into_iter())
-        .map(|((p, v), i)| Get {
-          product: p,
-          subject: interns.insert_with(v, i),
-          declared_subject: None,
-        })
-        .collect();
-      Ok(GeneratorResponse::GetMulti(gets))
-    }
+  let response = with_externs(|py, e| {
+    e.call_method(
+      py,
+      "generator_send",
+      (generator as &PyObject, arg as &PyObject),
+      None,
+    )
+    .map_err(|py_err| Failure::from_py_err(py, py_err))
+  })?;
+
+  let gil = Python::acquire_gil();
+  let py = gil.python();
+  if let Ok(b) = response.cast_as::<PyGeneratorResponseBreak>(py) {
+    Ok(GeneratorResponse::Break(Value::new(
+      b.val(py).clone_ref(py),
+    )))
+  } else if let Ok(get) = response.cast_as::<PyGeneratorResponseGet>(py) {
+    let mut interns = INTERNS.get(py).borrow_mut();
+    Ok(GeneratorResponse::Get(Get::new(py, &mut interns, get)?))
+  } else if let Ok(get_multi) = response.cast_as::<PyGeneratorResponseGetMulti>(py) {
+    let mut interns = INTERNS.get(py).borrow_mut();
+    let gets = get_multi
+      .gets(py)
+      .iter(py)
+      .map(|g| {
+        let get = g
+          .cast_as::<PyGeneratorResponseGet>(py)
+          .map_err(|e| Failure::from_py_err(py, e.into()))?;
+        Ok(Get::new(py, &mut interns, get)?)
+      })
+      .collect::<Result<Vec<_>, _>>()?;
+    Ok(GeneratorResponse::GetMulti(gets))
+  } else {
+    panic!("generator_send returned unrecognized type: {:?}", response);
   }
 }
 
@@ -301,206 +308,82 @@ pub fn generator_send(generator: &Value, arg: &Value) -> Result<GeneratorRespons
 /// those configured in types::Types.
 ///
 pub fn unsafe_call(func: &Function, args: &[Value]) -> Value {
-  let interns = INTERNS.read();
-  let func_val = interns.get(&func.0);
-  call(func_val, args).unwrap_or_else(|e| {
-    panic!("Core function `{}` failed: {:?}", val_to_str(func_val), e);
+  let func_val = {
+    let gil = Python::acquire_gil();
+    let interns = INTERNS.get(gil.python()).borrow();
+    interns.key_get(&func.0).clone()
+  };
+  call(&func_val, args).unwrap_or_else(|e| {
+    panic!("Core function `{}` failed: {:?}", val_to_str(&func_val), e);
   })
 }
 
-/////////////////////////////////////////////////////////////////////////////////////////
-// The remainder of this file deals with the static initialization of the Externs.
-/////////////////////////////////////////////////////////////////////////////////////////
-
 lazy_static! {
-  // NB: Unfortunately, it's not currently possible to merge these locks, because mutating
-  // the `Interns` requires calls to extern functions, which would be re-entrant.
-  static ref EXTERNS: RwLock<Option<Externs>> = RwLock::new(None);
-  static ref INTERNS: RwLock<Interns> = RwLock::new(Interns::new());
+  static ref EXTERNS: GILProtected<RefCell<PyObject>> = GILProtected::new(RefCell::new({
+      // See set_externs.
+      none()
+  }));
+  static ref INTERNS: GILProtected<RefCell<Interns>> = GILProtected::new(RefCell::new(Interns::new()));
 }
 
 ///
 /// Set the static Externs for this process. All other methods of this module will fail
 /// until this has been called.
 ///
-pub fn set_externs(externs: Externs) {
-  let mut externs_ref = EXTERNS.write();
-  *externs_ref = Some(externs);
+pub fn set_externs(externs: PyObject) {
+  let gil = Python::acquire_gil();
+  EXTERNS.get(gil.python()).replace(externs);
 }
 
 fn with_externs<F, T>(f: F) -> T
 where
-  F: FnOnce(&Externs) -> T,
+  F: FnOnce(Python, &PyObject) -> T,
 {
-  let externs_opt = EXTERNS.read();
-  let externs = externs_opt
-    .as_ref()
-    .unwrap_or_else(|| panic!("externs used before static initialization."));
-  f(externs)
+  let gil = Python::acquire_gil();
+  let externs = EXTERNS.get(gil.python()).borrow();
+  f(gil.python(), &externs)
 }
 
-// An opaque pointer to a context used by the extern functions.
-pub type ExternContext = raw::c_void;
-
-pub struct Externs {
-  pub context: *const ExternContext,
-  pub log_level: u8,
-  pub none: Handle,
-  pub call: CallExtern,
-  pub generator_send: GeneratorSendExtern,
-  pub get_type_for: GetTypeForExtern,
-  pub get_handle_from_type_id: GetHandleFromTypeIdExtern,
-  pub is_union: IsUnionExtern,
-  pub identify: IdentifyExtern,
-  pub equals: EqualsExtern,
-  pub clone_val: CloneValExtern,
-  pub drop_handles: DropHandlesExtern,
-  pub store_tuple: StoreTupleExtern,
-  pub store_set: StoreTupleExtern,
-  pub store_dict: StoreTupleExtern,
-  pub store_bytes: StoreBytesExtern,
-  pub store_utf8: StoreUtf8Extern,
-  pub store_u64: StoreU64Extern,
-  pub store_i64: StoreI64Extern,
-  pub store_f64: StoreF64Extern,
-  pub store_bool: StoreBoolExtern,
-  pub project_ignoring_type: ProjectIgnoringTypeExtern,
-  pub project_multi: ProjectMultiExtern,
-  pub type_to_str: TypeToStrExtern,
-  pub val_to_bytes: ValToBytesExtern,
-  pub val_to_str: ValToStrExtern,
-  pub val_to_bool: ValToBoolExtern,
-  pub create_exception: CreateExceptionExtern,
-}
-
-// The pointer to the context is safe for sharing between threads.
-unsafe impl Sync for Externs {}
-unsafe impl Send for Externs {}
-
-pub type GetTypeForExtern = extern "C" fn(*const ExternContext, *const Handle) -> TypeId;
-
-pub type GetHandleFromTypeIdExtern = extern "C" fn(*const ExternContext, TypeId) -> Handle;
-
-pub type IsUnionExtern = extern "C" fn(*const ExternContext, TypeId) -> bool;
-
-pub type IdentifyExtern = extern "C" fn(*const ExternContext, *const Handle) -> Ident;
-
-pub type EqualsExtern = extern "C" fn(*const ExternContext, *const Handle, *const Handle) -> bool;
-
-pub type CloneValExtern = extern "C" fn(*const ExternContext, *const Handle) -> Handle;
-
-pub type DropHandlesExtern = extern "C" fn(*const ExternContext, *const DroppingHandle, u64);
-
-pub type StoreTupleExtern =
-  extern "C" fn(*const ExternContext, *const *const Handle, u64) -> Handle;
-
-pub type StoreBytesExtern = extern "C" fn(*const ExternContext, *const u8, u64) -> Handle;
-
-pub type StoreUtf8Extern = extern "C" fn(*const ExternContext, *const u8, u64) -> Handle;
-
-pub type StoreU64Extern = extern "C" fn(*const ExternContext, u64) -> Handle;
-
-pub type StoreI64Extern = extern "C" fn(*const ExternContext, i64) -> Handle;
-
-pub type StoreF64Extern = extern "C" fn(*const ExternContext, f64) -> Handle;
-
-pub type StoreBoolExtern = extern "C" fn(*const ExternContext, bool) -> Handle;
-
-///
-/// NB: When a PyResult is handed from Python to Rust, the Rust side destroys the handle. But when
-/// it is passed from Rust to Python, Python must destroy the handle.
-///
-#[repr(C)]
-pub struct PyResult {
-  is_throw: bool,
-  handle: Handle,
-}
-
-impl PyResult {
-  fn failure_from(v: Value) -> Failure {
-    let traceback = project_str(&v, "_formatted_exc");
-    Failure::Throw(v, traceback)
-  }
-}
-
-impl From<Value> for PyResult {
-  fn from(val: Value) -> Self {
-    PyResult {
-      is_throw: false,
-      handle: val.into(),
+py_class!(pub class PyGeneratorResponseBreak |py| {
+    data val: PyObject;
+    def __new__(_cls, val: PyObject) -> CPyResult<Self> {
+      Self::create_instance(py, val)
     }
-  }
-}
+});
 
-impl From<Result<Value, Failure>> for PyResult {
-  fn from(result: Result<Value, Failure>) -> Self {
-    match result {
-      Ok(val) => val.into(),
-      Err(f) => {
-        let val = match f {
-          f @ Failure::Invalidated => create_exception(&format!("{}", f)),
-          Failure::Throw(exc, _) => exc,
-        };
-        PyResult {
-          is_throw: true,
-          handle: val.into(),
-        }
-      }
+py_class!(pub class PyGeneratorResponseGet |py| {
+    data product: PyType;
+    data declared_subject: PyType;
+    data subject: PyObject;
+    def __new__(_cls, product: PyType, declared_subject: PyType, subject: PyObject) -> CPyResult<Self> {
+      Self::create_instance(py, product, declared_subject, subject)
     }
-  }
-}
+});
 
-impl From<PyResult> for Result<Value, Failure> {
-  fn from(result: PyResult) -> Self {
-    let value = result.handle.into();
-    if result.is_throw {
-      Err(PyResult::failure_from(value))
-    } else {
-      Ok(value)
+py_class!(pub class PyGeneratorResponseGetMulti |py| {
+    data gets: PyTuple;
+    def __new__(_cls, gets: PyTuple) -> CPyResult<Self> {
+      Self::create_instance(py, gets)
     }
-  }
-}
-
-impl From<Result<Value, String>> for PyResult {
-  fn from(res: Result<Value, String>) -> Self {
-    match res {
-      Ok(v) => PyResult {
-        is_throw: false,
-        handle: v.into(),
-      },
-      Err(msg) => PyResult {
-        is_throw: true,
-        handle: create_exception(&msg).into(),
-      },
-    }
-  }
-}
-
-impl From<Result<(), String>> for PyResult {
-  fn from(res: Result<(), String>) -> Self {
-    PyResult::from(res.map(|()| Value::from(none())))
-  }
-}
-
-///
-/// The response from a call to extern_generator_send. Gets include Idents for their Handles
-/// in order to avoid roundtripping to intern them, and to eagerly trigger errors for unhashable
-/// types on the python side where possible.
-///
-#[repr(C)]
-pub enum PyGeneratorResponse {
-  Get(TypeId, Handle, Ident, TypeId),
-  GetMulti(TypeIdBuffer, HandleBuffer, IdentBuffer),
-  // NB: Broke not Break because C keyword.
-  Broke(Handle),
-  Throw(Handle),
-}
+});
 
 #[derive(Debug)]
 pub struct Get {
   pub product: TypeId,
   pub subject: Key,
   pub declared_subject: Option<TypeId>,
+}
+
+impl Get {
+  fn new(py: Python, interns: &mut Interns, get: &PyGeneratorResponseGet) -> Result<Get, Failure> {
+    Ok(Get {
+      product: interns.type_insert(py, get.product(py).clone_ref(py)),
+      subject: interns
+        .key_insert(py, get.subject(py).clone_ref(py).into())
+        .map_err(|e| Failure::from_py_err(py, e))?,
+      declared_subject: Some(interns.type_insert(py, get.declared_subject(py).clone_ref(py))),
+    })
+  }
 }
 
 impl fmt::Display for Get {
@@ -518,231 +401,4 @@ pub enum GeneratorResponse {
   Break(Value),
   Get(Get),
   GetMulti(Vec<Get>),
-}
-
-///
-/// The result of an `identify` call, including the __hash__ of a Handle and a TypeId representing
-/// the object's type.
-///
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct Ident {
-  pub hash: i64,
-  pub type_id: TypeId,
-}
-
-pub trait RawBuffer<Raw, Output> {
-  fn ptr(&self) -> *mut Raw;
-  fn len(&self) -> u64;
-
-  ///
-  /// A buffer-specific shallow clone operation (possibly just implemented via clone).
-  ///
-  fn lift(t: &Raw) -> Output;
-
-  ///
-  /// Returns a Vec copy of the buffer contents.
-  ///
-  fn to_vec(&self) -> Vec<Output> {
-    with_vec(self.ptr(), self.len() as usize, |vec| {
-      vec.iter().map(Self::lift).collect()
-    })
-  }
-
-  ///
-  /// Asserts that the buffer contains one item, and returns a copy of it.
-  ///
-  fn unwrap_one(&self) -> Output {
-    assert!(
-      self.len() == 1,
-      "Expected exactly 1 item in Buffer, but had: {}",
-      self.len()
-    );
-    with_vec(self.ptr(), self.len() as usize, |vec| Self::lift(&vec[0]))
-  }
-}
-
-///
-/// Points to an array containing a series of values allocated by Python.
-///
-/// TODO: An interesting optimization might be possible where we avoid actually
-/// allocating the values array for values_len == 1, and instead store the Handle in
-/// the `handle_` field.
-///
-#[repr(C)]
-pub struct HandleBuffer {
-  handles_ptr: *mut Handle,
-  handles_len: u64,
-  // A Handle to hold the underlying buffer alive.
-  handle_: Handle,
-}
-
-impl RawBuffer<Handle, Value> for HandleBuffer {
-  fn ptr(&self) -> *mut Handle {
-    self.handles_ptr
-  }
-
-  fn len(&self) -> u64 {
-    self.handles_len
-  }
-
-  fn lift(t: &Handle) -> Value {
-    Value::new(unsafe { t.clone_shallow() })
-  }
-}
-
-#[repr(C)]
-pub struct IdentBuffer {
-  idents_ptr: *mut Ident,
-  idents_len: u64,
-  // A Handle to hold the underlying array alive.
-  handle_: Handle,
-}
-
-impl RawBuffer<Ident, Ident> for IdentBuffer {
-  fn ptr(&self) -> *mut Ident {
-    self.idents_ptr
-  }
-
-  fn len(&self) -> u64 {
-    self.idents_len
-  }
-
-  fn lift(t: &Ident) -> Ident {
-    *t
-  }
-}
-
-#[repr(C)]
-pub struct TypeIdBuffer {
-  ids_ptr: *mut TypeId,
-  ids_len: u64,
-  // A Handle to hold the underlying array alive.
-  handle_: Handle,
-}
-
-impl RawBuffer<TypeId, TypeId> for TypeIdBuffer {
-  fn ptr(&self) -> *mut TypeId {
-    self.ids_ptr
-  }
-
-  fn len(&self) -> u64 {
-    self.ids_len
-  }
-
-  fn lift(t: &TypeId) -> TypeId {
-    *t
-  }
-}
-
-pub type ProjectIgnoringTypeExtern = extern "C" fn(
-  *const ExternContext,
-  *const Handle,
-  field_name_ptr: *const u8,
-  field_name_len: u64,
-) -> Handle;
-
-pub type ProjectMultiExtern = extern "C" fn(
-  *const ExternContext,
-  *const Handle,
-  field_name_ptr: *const u8,
-  field_name_len: u64,
-) -> HandleBuffer;
-
-#[repr(C)]
-pub struct Buffer {
-  bytes_ptr: *mut u8,
-  bytes_len: u64,
-  // A Handle to hold the underlying array alive.
-  handle_: Handle,
-}
-
-impl Buffer {
-  pub fn to_bytes(&self) -> Vec<u8> {
-    with_vec(self.bytes_ptr, self.bytes_len as usize, Vec::clone)
-  }
-
-  pub fn to_os_string(&self) -> OsString {
-    OsString::from_vec(self.to_bytes())
-  }
-
-  pub fn to_string(&self) -> Result<String, FromUtf8Error> {
-    String::from_utf8(self.to_bytes())
-  }
-}
-
-///
-/// Points to an array of (byte) Buffers.
-///
-/// TODO: Because this is only ever passed from Python to Rust, it could just use
-/// `project_multi_strs`.
-///
-#[repr(C)]
-pub struct BufferBuffer {
-  bufs_ptr: *mut Buffer,
-  bufs_len: u64,
-  // A Handle to hold the underlying array alive.
-  handle_: Handle,
-}
-
-impl BufferBuffer {
-  pub fn to_bytes_vecs(&self) -> Vec<Vec<u8>> {
-    with_vec(self.bufs_ptr, self.bufs_len as usize, |vec| {
-      vec.iter().map(Buffer::to_bytes).collect()
-    })
-  }
-
-  pub fn to_os_strings(&self) -> Vec<OsString> {
-    self
-      .to_bytes_vecs()
-      .into_iter()
-      .map(OsString::from_vec)
-      .collect()
-  }
-
-  pub fn to_strings(&self) -> Result<Vec<String>, FromUtf8Error> {
-    self
-      .to_bytes_vecs()
-      .into_iter()
-      .map(String::from_utf8)
-      .collect()
-  }
-
-  pub fn to_map(&self, name: &'static str) -> Result<BTreeMap<String, String>, String> {
-    let strings = self
-      .to_strings()
-      .map_err(|err| format!("Error decoding UTF8 from {}: {}", name, err))?;
-
-    if strings.len() % 2 != 0 {
-      return Err(format!("Map for {} had an odd number of elements", name));
-    }
-
-    Ok(strings.into_iter().tuples::<(_, _)>().collect())
-  }
-}
-
-pub type TypeToStrExtern = extern "C" fn(*const ExternContext, TypeId) -> Buffer;
-
-pub type ValToStrExtern = extern "C" fn(*const ExternContext, *const Handle) -> Buffer;
-pub type ValToBytesExtern = extern "C" fn(*const ExternContext, *const Handle) -> Buffer;
-
-pub type ValToBoolExtern = extern "C" fn(*const ExternContext, *const Handle) -> bool;
-
-pub type CreateExceptionExtern =
-  extern "C" fn(*const ExternContext, str_ptr: *const u8, str_len: u64) -> Handle;
-
-pub type CallExtern =
-  extern "C" fn(*const ExternContext, *const Handle, *const *const Handle, u64) -> PyResult;
-
-pub type GeneratorSendExtern =
-  extern "C" fn(*const ExternContext, *const Handle, *const Handle) -> PyGeneratorResponse;
-
-pub fn with_vec<F, C, T>(c_ptr: *mut C, c_len: usize, f: F) -> T
-where
-  F: FnOnce(&Vec<C>) -> T,
-{
-  let cs = unsafe { Vec::from_raw_parts(c_ptr, c_len, c_len) };
-  let output = f(&cs);
-  mem::forget(cs);
-  output
 }

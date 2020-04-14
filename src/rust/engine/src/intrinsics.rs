@@ -6,7 +6,7 @@ use crate::nodes::{lift_digest, DownloadedFile, NodeFuture, Snapshot};
 use crate::tasks::Intrinsic;
 use crate::types::Types;
 
-use boxfuture::Boxable;
+use boxfuture::{try_future, Boxable};
 use bytes;
 use futures::future::{self as future03, TryFutureExt};
 use futures01::{future, Future};
@@ -83,7 +83,7 @@ impl Intrinsics {
     intrinsics.insert(
       Intrinsic {
         product: types.process_result,
-        inputs: vec![types.multi_platform_process_request, types.platform],
+        inputs: vec![types.multi_platform_process, types.platform],
       },
       Box::new(multi_platform_process_request_to_process_result),
     );
@@ -153,8 +153,8 @@ fn directory_digest_to_files_content(context: Context, args: Vec<Value>) -> Node
         .core
         .store()
         .contents_for_directory(digest)
-        .map_err(|str| throw(&str))
-        .map(move |files_content| Snapshot::store_files_content(&context, &files_content))
+        .and_then(move |files_content| Snapshot::store_files_content(&context, &files_content))
+        .map_err(|s| throw(&s))
     })
     .to_boxed()
 }
@@ -206,8 +206,7 @@ fn digest_to_snapshot(context: Context, args: Vec<Value>) -> NodeFuture<Value> {
   Box::pin(async move {
     let digest = lift_digest(&args[0])?;
     let snapshot = store::Snapshot::from_digest(store, digest).await?;
-    let res: Result<_, String> = Ok(Snapshot::store_snapshot(&core, &snapshot));
-    res
+    Snapshot::store_snapshot(&core, &snapshot)
   })
   .compat()
   .map_err(|e: String| throw(&e))
@@ -234,16 +233,20 @@ fn directories_to_merge_to_digest(context: Context, args: Vec<Value>) -> NodeFut
 fn url_to_fetch_to_snapshot(context: Context, mut args: Vec<Value>) -> NodeFuture<Value> {
   let core = context.core.clone();
   context
-    .get(DownloadedFile(externs::key_for(args.pop().unwrap())))
-    .map(move |snapshot| Snapshot::store_snapshot(&core, &snapshot))
+    .get(DownloadedFile(try_future!(externs::acquire_key_for(
+      args.pop().unwrap()
+    ))))
+    .and_then(move |snapshot| Snapshot::store_snapshot(&core, &snapshot).map_err(|err| throw(&err)))
     .to_boxed()
 }
 
 fn path_globs_to_snapshot(context: Context, mut args: Vec<Value>) -> NodeFuture<Value> {
   let core = context.core.clone();
   context
-    .get(Snapshot(externs::key_for(args.pop().unwrap())))
-    .map(move |snapshot| Snapshot::store_snapshot(&core, &snapshot))
+    .get(Snapshot(try_future!(externs::acquire_key_for(
+      args.pop().unwrap()
+    ))))
+    .and_then(move |snapshot| Snapshot::store_snapshot(&core, &snapshot).map_err(|err| throw(&err)))
     .to_boxed()
 }
 
@@ -293,7 +296,7 @@ fn snapshot_subset_to_snapshot(context: Context, args: Vec<Value>) -> NodeFuture
 
     let snapshot = store::Snapshot::get_snapshot_subset(store, original_digest, path_globs).await?;
 
-    Ok(Snapshot::store_snapshot(&context.core, &snapshot))
+    Ok(Snapshot::store_snapshot(&context.core, &snapshot)?)
   })
   .compat()
   .map_err(|err: String| throw(&err))

@@ -52,7 +52,7 @@ Exception message:.* 1 Exception encountered:
 
     def test_fails_ctrl_c_cffi_extern(self):
         with temporary_dir() as tmpdir:
-            with environment_as(_RAISE_KEYBOARDINTERRUPT_IN_CFFI_IDENTIFY="True"):
+            with environment_as(_RAISE_KEYBOARDINTERRUPT_IN_CFFI_UNION="True"):
                 pants_run = self.run_pants_with_workdir(
                     self._lifecycle_stub_cmdline(), workdir=tmpdir
                 )

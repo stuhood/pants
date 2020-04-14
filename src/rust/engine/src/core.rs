@@ -8,8 +8,8 @@ use std::sync::Arc;
 use std::{fmt, hash};
 
 use crate::externs;
-use crate::handles::Handle;
 
+use cpython::{FromPyObject, PyClone, PyDict, PyErr, PyObject, PyResult, Python};
 use rule_graph;
 use smallvec::{smallvec, SmallVec};
 
@@ -123,11 +123,7 @@ pub struct TypeId(pub Id);
 
 impl TypeId {
   fn pretty_print(self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    if self == ANY_TYPE {
-      write!(f, "Any")
-    } else {
-      write!(f, "{}", externs::type_to_str(self))
-    }
+    write!(f, "{}", externs::type_to_str(self))
   }
 }
 
@@ -155,9 +151,6 @@ impl fmt::Display for TypeId {
   }
 }
 
-// On the python side, the 0th type id is used as an anonymous id
-pub const ANY_TYPE: TypeId = TypeId(0);
-
 // An identifier for a python function.
 #[repr(C)]
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]
@@ -166,11 +159,12 @@ pub struct Function(pub Key);
 impl Function {
   pub fn name(&self) -> String {
     let Function(key) = self;
-    let module = externs::project_str(&externs::val_for(&key), "__module__");
-    let name = externs::project_str(&externs::val_for(&key), "__name__");
+    let val = externs::val_for(&key);
+    let module = externs::project_str(&val, "__module__");
+    let name = externs::project_str(&val, "__name__");
     // NB: this is a custom dunder method that Python code should populate before sending the
     // function (e.g. an `@rule`) through FFI.
-    let line_number = externs::project_str(&externs::val_for(&key), "__line_number__");
+    let line_number = externs::project_u64(&val, "__line_number__");
     format!("{}:{}:{}", module, line_number, name)
   }
 }
@@ -188,7 +182,7 @@ impl fmt::Debug for Function {
 }
 
 ///
-/// Wraps a type id for use as a key in HashMaps and sets.
+/// An interned key for a Value for use as a key in HashMaps and sets.
 ///
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -238,21 +232,38 @@ impl Key {
 }
 
 ///
-/// A wrapper around a Arc<Handle>
+/// We wrap PyObject (which cannot be cloned without acquiring the GIL) in an Arc in order to avoid
+/// accessing the Gil in many cases.
 ///
-#[derive(Clone, Eq, PartialEq)]
-pub struct Value(Arc<Handle>);
+#[derive(Clone)]
+pub struct Value(Arc<PyObject>);
 
 impl Value {
-  pub fn new(handle: Handle) -> Value {
+  pub fn new(handle: PyObject) -> Value {
     Value(Arc::new(handle))
+  }
+
+  // NB: Longer name because overloaded in a few places.
+  pub fn consume_into_py_object(self, py: Python) -> PyObject {
+    match Arc::try_unwrap(self.0) {
+      Ok(handle) => handle,
+      Err(arc_handle) => arc_handle.clone_ref(py),
+    }
   }
 }
 
-impl Deref for Value {
-  type Target = Handle;
+impl PartialEq for Value {
+  fn eq(&self, other: &Value) -> bool {
+    externs::equals(&self.0, &other.0)
+  }
+}
 
-  fn deref(&self) -> &Handle {
+impl Eq for Value {}
+
+impl Deref for Value {
+  type Target = PyObject;
+
+  fn deref(&self) -> &PyObject {
     &self.0
   }
 }
@@ -263,21 +274,26 @@ impl fmt::Debug for Value {
   }
 }
 
-///
-/// Creates a Handle (which represents exclusive access) from a Value (which might be shared),
-/// cloning if necessary.
-///
-impl From<Value> for Handle {
+impl FromPyObject<'_> for Value {
+  fn extract(py: Python, obj: &PyObject) -> PyResult<Self> {
+    Ok(obj.clone_ref(py).into())
+  }
+}
+
+impl From<Value> for PyObject {
   fn from(value: Value) -> Self {
     match Arc::try_unwrap(value.0) {
       Ok(handle) => handle,
-      Err(arc_handle) => externs::clone_val(&arc_handle),
+      Err(arc_handle) => {
+        let gil = Python::acquire_gil();
+        arc_handle.clone_ref(gil.python())
+      }
     }
   }
 }
 
-impl From<Handle> for Value {
-  fn from(handle: Handle) -> Self {
+impl From<PyObject> for Value {
+  fn from(handle: PyObject) -> Self {
     Value::new(handle)
   }
 }
@@ -289,6 +305,33 @@ pub enum Failure {
   Invalidated,
   /// A rule raised an exception.
   Throw(Value, String),
+}
+
+impl Failure {
+  pub fn from_py_err(py: Python, mut py_err: PyErr) -> Failure {
+    let instance = Value::from(py_err.instance(py));
+    let traceback = if let Some(tb) = py_err.ptraceback.as_ref() {
+      let locals = PyDict::new(py);
+      locals
+        .set_item(py, "traceback", py.import("traceback").unwrap())
+        .unwrap();
+      locals.set_item(py, "tb", tb).unwrap();
+      py.eval("''.join(traceback.format_tb(tb))", None, Some(&locals))
+        .unwrap()
+        .extract::<String>(py)
+        .unwrap()
+    } else {
+      Self::native_traceback(&externs::val_to_str(&instance))
+    };
+    Failure::Throw(instance, traceback)
+  }
+
+  pub fn native_traceback(msg: &str) -> String {
+    format!(
+      "Traceback (no traceback):\n  <pants native internals>\nException: {}",
+      msg
+    )
+  }
 }
 
 impl fmt::Display for Failure {
@@ -303,9 +346,6 @@ impl fmt::Display for Failure {
 pub fn throw(msg: &str) -> Failure {
   Failure::Throw(
     externs::create_exception(msg),
-    format!(
-      "Traceback (no traceback):\n  <pants native internals>\nException: {}",
-      msg
-    ),
+    Failure::native_traceback(msg),
   )
 }
