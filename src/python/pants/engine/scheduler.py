@@ -212,8 +212,7 @@ class Scheduler:
         # so we always need to invalidate the direct parent as well.
         filenames = set(direct_filenames)
         filenames.update(os.path.dirname(f) for f in direct_filenames)
-        filenames_buf = self._native.context.utf8_buf_buf(filenames)
-        return self._native.lib.graph_invalidate(self._scheduler, filenames_buf)
+        return self._native.lib.graph_invalidate(self._scheduler, tuple(filenames))
 
     def invalidate_all_files(self):
         return self._native.lib.graph_invalidate_all_paths(self._scheduler)
@@ -246,15 +245,10 @@ class Scheduler:
     def _run_and_return_roots(self, session, execution_request):
         raw_roots = self._native.lib.scheduler_execute(self._scheduler, session, execution_request)
 
-        roots = []
-        for raw_root in raw_roots:
-            if raw_root.is_throw():
-                state = Throw(raw_root.handle())
-            else:
-                state = Return(raw_root.handle())
-            roots.append(state)
-
-        return roots
+        return [
+            Throw(raw_root.handle()) if raw_root.is_throw() else Return(raw_root.handle())
+            for raw_root in raw_roots
+        ]
 
     def lease_files_in_graph(self, session):
         self._native.lib.lease_files_in_graph(self._scheduler, session)
@@ -456,7 +450,6 @@ class SchedulerSession:
         :param list subjects: A list of subjects or Params instances for the request.
         :returns: A list of the requested products, with length match len(subjects).
         """
-        request = None
         request = self.execution_request([product], subjects)
         returns, throws = self.execute(request)
 
