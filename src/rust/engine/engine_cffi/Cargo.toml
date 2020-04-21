@@ -9,7 +9,7 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
-cpython = { version = "0.5", features = ["extension-module"] }
+cpython = { version = "0.5", features = ["extension-module", "no-auto-initialize"] }
 engine = { path = ".." }
 futures01 = { package = "futures", version = "0.1" }
 futures = { version = "0.3", features = ["compat"] }

@@ -8,9 +8,15 @@
   clippy::zero_ptr
 )]
 
-use std::cell::RefCell;
+use std::cell::{RefCell, RefMut, Ref};
 use std::collections::BTreeMap;
 use std::fmt;
+use std::ops::{Deref, DerefMut};
+
+use log::warn;
+
+use rand::thread_rng;
+use rand::Rng;
 
 use crate::core::{Failure, Function, Key, TypeId, Value};
 use crate::interning::Interns;
@@ -32,7 +38,7 @@ pub fn none() -> PyObject {
 pub fn get_value_from_type_id(ty: TypeId) -> Value {
   let gil = Python::acquire_gil();
   let py = gil.python();
-  let interns = INTERNS.get(py).borrow();
+  let interns = NoisyRef::new(INTERNS.get(py), "get_value_from_type_id");
   Value::from(interns.type_get(&ty).clone_ref(py).into_object())
 }
 
@@ -40,13 +46,13 @@ pub fn get_type_for(val: &Value) -> TypeId {
   let gil = Python::acquire_gil();
   let py = gil.python();
   let py_type = val.get_type(py);
-  let mut interns = INTERNS.get(py).borrow_mut();
+  let mut interns = NoisyRefMut::new(INTERNS.get(py), "get_type_for");
   interns.type_insert(py, py_type)
 }
 
 pub fn is_union(ty: TypeId) -> bool {
   with_externs(|py, e| {
-    let interns = INTERNS.get(py).borrow();
+    let interns = NoisyRef::new(INTERNS.get(py), "is_union");
     let py_type = interns.type_get(&ty);
     e.call_method(py, "is_union", (py_type,), None)
       .unwrap()
@@ -66,7 +72,7 @@ pub fn equals(h1: &PyObject, h2: &PyObject) -> bool {
 }
 
 pub fn type_for(py: Python, py_type: PyType) -> TypeId {
-  let mut interns = INTERNS.get(py).borrow_mut();
+  let mut interns = NoisyRefMut::new(INTERNS.get(py), "type_for");
   interns.type_insert(py, py_type)
 }
 
@@ -77,7 +83,7 @@ pub fn acquire_key_for(val: Value) -> Result<Key, Failure> {
 }
 
 pub fn key_for(py: Python, val: Value) -> Result<Key, PyErr> {
-  let mut interns = INTERNS.get(py).borrow_mut();
+  let mut interns = NoisyRefMut::new(INTERNS.get(py), "key_for");
   interns.key_insert(py, val)
 }
 
@@ -283,10 +289,10 @@ pub fn generator_send(generator: &Value, arg: &Value) -> Result<GeneratorRespons
       b.val(py).clone_ref(py),
     )))
   } else if let Ok(get) = response.cast_as::<PyGeneratorResponseGet>(py) {
-    let mut interns = INTERNS.get(py).borrow_mut();
+    let mut interns = NoisyRefMut::new(INTERNS.get(py), "generator_send_get");
     Ok(GeneratorResponse::Get(Get::new(py, &mut interns, get)?))
   } else if let Ok(get_multi) = response.cast_as::<PyGeneratorResponseGetMulti>(py) {
-    let mut interns = INTERNS.get(py).borrow_mut();
+    let mut interns = NoisyRefMut::new(INTERNS.get(py), "generator_send_get_multi");
     let gets = get_multi
       .gets(py)
       .iter(py)
@@ -297,6 +303,7 @@ pub fn generator_send(generator: &Value, arg: &Value) -> Result<GeneratorRespons
         Ok(Get::new(py, &mut interns, get)?)
       })
       .collect::<Result<Vec<_>, _>>()?;
+    
     Ok(GeneratorResponse::GetMulti(gets))
   } else {
     panic!("generator_send returned unrecognized type: {:?}", response);
@@ -324,6 +331,62 @@ lazy_static! {
       none()
   }));
   static ref INTERNS: GILProtected<RefCell<Interns>> = GILProtected::new(RefCell::new(Interns::new()));
+}
+
+struct NoisyRefMut<'a, T>(RefMut<'a, T>, String);
+
+impl<'a, T> NoisyRefMut<'a, T> {
+  pub fn new(rc: &'a RefCell<T>, site: &str) -> Self {
+    let mut rng = thread_rng();
+    let random_u64: u64 = rng.gen();
+    let random_str = format!("{:016.x}", random_u64);
+    warn!("+++ {} {:?} {}", random_str, std::thread::current().id(), site);
+    NoisyRefMut(rc.borrow_mut(), random_str)
+  }
+}
+
+impl<'a, T> Deref for NoisyRefMut<'a, T> {
+  type Target = RefMut<'a, T>;
+  fn deref(&self) -> &Self::Target {
+    &self.0
+  }
+}
+
+impl<'a, T> DerefMut for NoisyRefMut<'a, T> {
+  fn deref_mut(&mut self) -> &mut Self::Target {
+    &mut self.0
+  }
+}
+
+impl<'a, T> Drop for NoisyRefMut<'a, T> {
+  fn drop(&mut self) {
+    warn!("--- {}", self.1);
+  }
+}
+
+struct NoisyRef<'a, T>(Ref<'a, T>, String);
+
+impl<'a, T> NoisyRef<'a, T> {
+  pub fn new(rc: &'a RefCell<T>, site: &str) -> Self {
+    let mut rng = thread_rng();
+    let random_u64: u64 = rng.gen();
+    let random_str = format!("{:016.x}", random_u64);
+    warn!("+++ {} {:?} {}", random_str, std::thread::current().id(), site);
+    NoisyRef(rc.borrow(), random_str)
+  }
+}
+
+impl<'a, T> Deref for NoisyRef<'a, T> {
+  type Target = Ref<'a, T>;
+  fn deref(&self) -> &Self::Target {
+    &self.0
+  }
+}
+
+impl<'a, T> Drop for NoisyRef<'a, T> {
+  fn drop(&mut self) {
+    warn!("--- {}", self.1);
+  }
 }
 
 ///
