@@ -187,8 +187,12 @@ impl Scheduler {
     }
   }
 
+  fn new_context(&self, session: &Session) -> Context {
+    Context::new(self.core.clone(), session.clone())
+  }
+
   pub fn visualize(&self, session: &Session, path: &Path) -> io::Result<()> {
-    let context = Context::new(self.core.clone(), session.clone());
+    let context = self.new_context(session);
     self
       .core
       .graph
@@ -201,7 +205,7 @@ impl Scheduler {
     request: &ExecutionRequest,
     path: &Path,
   ) -> Result<(), String> {
-    let context = Context::new(self.core.clone(), session.clone());
+    let context = self.new_context(session);
     self
       .core
       .graph
@@ -251,7 +255,7 @@ impl Scheduler {
   /// Return Scheduler and per-Session metrics.
   ///
   pub fn metrics(&self, session: &Session) -> HashMap<&str, i64> {
-    let context = Context::new(self.core.clone(), session.clone());
+    let context = self.new_context(session);
     let mut m = HashMap::new();
     m.insert(
       "affected_file_count",
@@ -269,10 +273,22 @@ impl Scheduler {
   }
 
   ///
+  /// Return unit if the Scheduler is still valid, or an error string if something has invalidated
+  /// the Scheduler, indicating that it should re-initialize. See InvalidationWatcher.
+  ///
+  pub fn is_valid(&self) -> Result<(), String> {
+    let core = self.core.clone();
+    self.core.executor.block_on(async move {
+      // Confirm that our InvalidationWatcher is still alive.
+      core.watcher.is_valid().await
+    })
+  }
+
+  ///
   /// Return all Digests currently in memory in this Scheduler.
   ///
   pub fn all_digests(&self, session: &Session) -> Vec<hashing::Digest> {
-    let context = Context::new(self.core.clone(), session.clone());
+    let context = self.new_context(session);
     self.core.graph.all_digests(&context)
   }
 
@@ -353,7 +369,7 @@ impl Scheduler {
 
     // Wait for all roots to complete. Failure here should be impossible, because each
     // individual Future in the join was (eventually) mapped into success.
-    let context = Context::new(self.core.clone(), session.clone());
+    let context = self.new_context(session);
     let (sender, receiver) = mpsc::channel();
 
     Scheduler::execute_helper(context, sender, request.roots.clone(), 8);
