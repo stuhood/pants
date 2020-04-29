@@ -239,7 +239,6 @@ pub extern "C" fn scheduler_create(
   process_execution_use_local_cache: bool,
   remote_execution_headers_buf: BufferBuffer,
   process_execution_local_enable_nailgun: bool,
-  experimental_fs_watcher: bool,
 ) -> RawResult {
   match make_core(
     tasks_ptr,
@@ -270,7 +269,6 @@ pub extern "C" fn scheduler_create(
     process_execution_use_local_cache,
     remote_execution_headers_buf,
     process_execution_local_enable_nailgun,
-    experimental_fs_watcher,
   ) {
     Ok(core) => RawResult {
       is_throw: false,
@@ -314,7 +312,6 @@ fn make_core(
   process_execution_use_local_cache: bool,
   remote_execution_headers_buf: BufferBuffer,
   process_execution_local_enable_nailgun: bool,
-  experimental_fs_watcher: bool,
 ) -> Result<Core, String> {
   let root_type_ids = root_type_ids.to_vec();
   let ignore_patterns = ignore_patterns_buf
@@ -426,7 +423,6 @@ fn make_core(
     process_execution_use_local_cache,
     remote_execution_headers,
     process_execution_local_enable_nailgun,
-    experimental_fs_watcher,
   )
 }
 
