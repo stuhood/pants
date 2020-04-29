@@ -51,8 +51,16 @@ struct InnerSession {
   should_record_zipkin_spans: bool,
   // A place to store info about workunits in rust part
   workunit_store: WorkUnitStore,
-  // The unique id for this run. Used as the id of the session, and for metrics gathering purposes.
+  // The unique id for this Session: used for metrics gathering purposes.
   build_id: String,
+  // An id used to control the visibility of uncacheable rules. Generally this is identical for an
+  // entire Session, but in some cases (in particular, a `--loop`) the caller wants to retain the
+  // same Session while still observing new values for uncacheable rules like Goals.
+  //
+  // TODO: Figure out how the `--loop` interplays with metrics. It's possible that for metrics
+  // purposes, each iteration of a loop should be considered to be a new Session, but for now the
+  // Session/build_id would be stable.
+  run_id: Mutex<Uuid>,
   should_report_workunits: bool,
 }
 
@@ -82,6 +90,7 @@ impl Session {
       should_record_zipkin_spans,
       workunit_store: WorkUnitStore::new(),
       build_id,
+      run_id: Mutex::new(Uuid::new_v4()),
       should_report_workunits,
     };
     Session(Arc::new(inner_session))
@@ -96,7 +105,10 @@ impl Session {
     let roots = self.0.roots.lock();
     inputs
       .iter()
-      .map(|root| (root.clone(), roots.get(root).cloned().unwrap_or(None)))
+      .map(|root| {
+        let last_observed = roots.get(root).cloned().unwrap_or(None);
+        (root.clone(), last_observed)
+      })
       .collect()
   }
 
@@ -127,6 +139,16 @@ impl Session {
 
   pub fn build_id(&self) -> &String {
     &self.0.build_id
+  }
+
+  pub fn run_id(&self) -> Uuid {
+    let run_id = self.0.run_id.lock();
+    *run_id
+  }
+
+  pub fn new_run_id(&self) {
+    let mut run_id = self.0.run_id.lock();
+    *run_id = Uuid::new_v4();
   }
 
   pub fn write_stdout(&self, msg: &str) {
@@ -410,7 +432,11 @@ impl Scheduler {
     request: &ExecutionRequest,
     session: &Session,
   ) -> Result<Vec<Result<Value, Failure>>, ExecutionTermination> {
-    debug!("Launching {} roots.", request.roots.len());
+    debug!(
+      "Launching {} roots (poll={}).",
+      request.roots.len(),
+      request.poll
+    );
 
     // Spawn and wait for all roots to complete. Failure here should be impossible, because each
     // individual Future in the join was (eventually) mapped into success.

@@ -824,6 +824,11 @@ pub extern "C" fn session_create(
 }
 
 #[no_mangle]
+pub extern "C" fn session_new_run_id(session_ptr: *mut Session) {
+  with_session(session_ptr, |session| session.new_run_id())
+}
+
+#[no_mangle]
 pub extern "C" fn session_destroy(ptr: *mut Session) {
   let _ = unsafe { Box::from_raw(ptr) };
 }

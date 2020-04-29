@@ -13,7 +13,9 @@ class TestFSEventService(TestBase):
     BUILD_ROOT = "/build_root"
     EMPTY_EVENT = (None, None)
     FAKE_EVENT = dict(subscription="test", files=["a/BUILD", "b/BUILD"])
-    FAKE_EVENT_STREAM = [("ignored", ev) for ev in [FAKE_EVENT, EMPTY_EVENT, EMPTY_EVENT, FAKE_EVENT, EMPTY_EVENT]]
+    FAKE_EVENT_STREAM = [
+        ("ignored", ev) for ev in [FAKE_EVENT, EMPTY_EVENT, EMPTY_EVENT, FAKE_EVENT, EMPTY_EVENT]
+    ]
     WORKER_COUNT = 1
 
     def setUp(self):

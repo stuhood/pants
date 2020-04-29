@@ -31,6 +31,7 @@ use rule_graph::RuleGraph;
 use sharded_lmdb::ShardedLmdb;
 use store::Store;
 use tokio::runtime::{Builder, Runtime};
+use uuid::Uuid;
 use watch::{Invalidatable, InvalidationWatcher};
 
 const GIGABYTES: usize = 1024 * 1024 * 1024;
@@ -337,14 +338,17 @@ pub struct Context {
   entry_id: Option<EntryId>,
   pub core: Arc<Core>,
   pub session: Session,
+  run_id: Uuid,
 }
 
 impl Context {
   pub fn new(core: Arc<Core>, session: Session) -> Context {
+    let run_id = session.run_id();
     Context {
       entry_id: None,
       core,
       session,
+      run_id,
     }
   }
 
@@ -369,7 +373,7 @@ impl Context {
 
 impl NodeContext for Context {
   type Node = NodeKey;
-  type SessionId = String;
+  type RunId = Uuid;
 
   ///
   /// Clones this Context for a new EntryId. Because the Core of the context is an Arc, this
@@ -383,8 +387,8 @@ impl NodeContext for Context {
     }
   }
 
-  fn session_id(&self) -> &Self::SessionId {
-    self.session.build_id()
+  fn run_id(&self) -> &Self::RunId {
+    &self.run_id
   }
 
   fn graph(&self) -> &Graph<NodeKey> {

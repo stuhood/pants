@@ -739,7 +739,7 @@ impl<N: Node> Graph<N> {
         .poll(context, generation)
         .compat()
         .await
-        .expect("Poll is infalliable.");
+        .expect("Polling is infalliable");
     };
 
     // Re-request the Node.

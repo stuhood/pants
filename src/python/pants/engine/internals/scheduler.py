@@ -380,8 +380,6 @@ class SchedulerSession:
     Session.
     """
 
-    execution_error_type = ExecutionError
-
     def __init__(self, scheduler, session):
         self._scheduler = scheduler
         self._session = session
@@ -396,6 +394,15 @@ class SchedulerSession:
 
     def graph_len(self):
         return self._scheduler.graph_len()
+
+    def new_run_id(self):
+        """Assigns a new "run id" to this Session, without creating a new Session.
+
+        Usually each Session corresponds to one end user "run", but there are exceptions: notably,
+        the `--loop` feature uses one Session, but would like to observe new values for uncacheable
+        nodes in each iteration of its loop.
+        """
+        self._scheduler._native.lib.session_new_run_id(self._session)
 
     def trace(self, execution_request):
         """Yields a stringified 'stacktrace' starting from the scheduler's roots."""

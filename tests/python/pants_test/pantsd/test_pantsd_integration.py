@@ -308,7 +308,7 @@ class TestPantsDaemonIntegration(PantsDaemonIntegrationTestBase):
 
             # Check the logs.
             self.assertRegex(
-                full_pantsd_log(), r"watching invalidating files:.*{}".format(test_dir)
+                full_pantsd_log(), r"watching invalidation patterns:.*{}".format(test_dir)
             )
 
             ctx.checker.assert_running()
