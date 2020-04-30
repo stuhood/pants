@@ -24,7 +24,7 @@ from pants.option.config import TomlSerializer
 from pants.subsystem.subsystem import Subsystem
 from pants.testutil.file_test_util import check_symlinks, contains_exact_files
 from pants.util.contextutil import environment_as, pushd, temporary_dir
-from pants.util.dirutil import fast_relpath, safe_mkdir, safe_mkdir_for, safe_open
+from pants.util.dirutil import fast_relpath, safe_mkdir, safe_mkdir_for, safe_open, safe_rmtree
 from pants.util.osutil import Pid
 from pants.util.process_handler import SubprocessProcessHandler
 from pants.util.strutil import ensure_binary
@@ -220,13 +220,22 @@ class PantsRunIntegrationTest(unittest.TestCase):
         Subsystem.reset()
 
     def temporary_workdir(self, cleanup=True):
-        # We can hard-code '.pants.d' here because we know that will always be its value
-        # in the pantsbuild/pants repo (e.g., that's what we .gitignore in that repo).
-        # Grabbing the pants_workdir config would require this pants's config object,
-        # which we don't have a reference to here.
-        root = os.path.join(get_buildroot(), ".pants.d", "tmp")
-        safe_mkdir(root)
-        return temporary_dir(root_dir=root, cleanup=cleanup, suffix=".pants.d")
+        default_workdir = os.path.join(get_buildroot(), ".pants.d")
+        if os.path.isdir(default_workdir):
+            # We're not in a chroot (or another test was misbehaved and left behind their temp dir.)
+            root = os.path.join(default_workdir, "tmp")
+            safe_mkdir(root)
+            return temporary_dir(root_dir=root, cleanup=cleanup, suffix=".pants.d")
+        else:
+            return self._temporary_workdir_context(default_workdir)
+
+    @contextmanager
+    def _temporary_workdir_context(self, default_workdir):
+        safe_mkdir(default_workdir)
+        try:
+            yield default_workdir
+        finally:
+            safe_rmtree(default_workdir)
 
     def temporary_cachedir(self):
         return temporary_dir(suffix="__CACHEDIR")
