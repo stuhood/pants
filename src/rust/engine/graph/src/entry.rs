@@ -3,10 +3,12 @@ use std::sync::Arc;
 
 use crate::node::{EntryId, Node, NodeContext, NodeError};
 
+use futures::future::TryFutureExt;
 use futures01::future::{self, Future};
 use futures01::sync::oneshot;
 use log::{self, trace};
 use parking_lot::Mutex;
+use tokio::sync::broadcast;
 
 use boxfuture::{BoxFuture, Boxable};
 
@@ -172,7 +174,7 @@ pub enum EntryState<N: Node> {
   Running {
     run_token: RunToken,
     generation: Generation,
-    waiters: Vec<oneshot::Sender<Result<(N::Item, Generation), N::Error>>>,
+    waiters: Option<broadcast::Sender<Result<(N::Item, Generation), N::Error>>>,
     previous_result: Option<EntryResult<N>>,
     dirty: bool,
   },
@@ -348,7 +350,7 @@ impl<N: Node> Entry<N> {
     }));
 
     EntryState::Running {
-      waiters: Vec::new(),
+      waiters: None,
       run_token,
       generation,
       previous_result,
@@ -378,11 +380,15 @@ impl<N: Node> Entry<N> {
         &mut EntryState::Running {
           ref mut waiters, ..
         } => {
-          let (send, recv) = oneshot::channel();
-          waiters.push(send);
-          return recv
-            .map_err(|_| N::Error::invalidated())
-            .flatten()
+          let mut rx = if let Some(tx) = waiters {
+            tx.subscribe()
+          } else {
+            let (tx, rx) = broadcast::channel(2);
+            *waiters = Some(tx);
+            rx
+          };
+          return Box::pin(async move { rx.recv().await.map_err(|_| N::Error::invalidated())? })
+            .compat()
             .to_boxed();
         }
         &mut EntryState::Completed {
@@ -573,20 +579,22 @@ impl<N: Node> Entry<N> {
             }
             (generation, result)
           };
-          // Notify all waiters (ignoring any that have gone away), and then store the value.
-          // A waiter will go away whenever they drop the `Future` `Receiver` of the value, perhaps
-          // due to failure of another Future in a `join` or `join_all`, or due to a timeout at the
-          // root of a request.
+          // Notify waiters, and then store the value. The `broadcast::Sender` will return an error
+          // if there were no waiters left alive, but that is ok in this case: waiters can go away
+          // for any number of reasons.
+          let waiter_count = if let Some(tx) = waiters {
+            tx.send(next_result.as_ref().clone().map(|res| (res, generation)))
+              .unwrap_or(0)
+          } else {
+            0
+          };
           trace!(
-            "Completing node {:?} (generation {:?}) with {} waiters: {:?}",
+            "Completed node {:?} (generation {:?}) with {} waiters: {:?}",
             self.node,
             generation,
-            waiters.len(),
+            waiter_count,
             next_result,
           );
-          for waiter in waiters {
-            let _ = waiter.send(next_result.as_ref().clone().map(|res| (res, generation)));
-          }
           EntryState::Completed {
             result: next_result,
             pollers: Vec::new(),

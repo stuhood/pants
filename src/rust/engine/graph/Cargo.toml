@@ -15,7 +15,7 @@ indexmap = "1.0.2"
 log = "0.4"
 parking_lot = "0.6"
 petgraph = "0.4.5"
-tokio = { version = "0.2", features = ["time"] }
+tokio = { version = "0.2", features = ["sync", "time"] }
 
 [dev-dependencies]
 rand = "0.6"

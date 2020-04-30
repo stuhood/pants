@@ -30,6 +30,7 @@ fn create() {
 
 #[test]
 fn invalidate_and_clean() {
+  let _logger = env_logger::try_init();
   let graph = Arc::new(Graph::new());
   let context = TContext::new(graph.clone());
 
