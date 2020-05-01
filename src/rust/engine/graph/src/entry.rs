@@ -174,7 +174,7 @@ pub enum EntryState<N: Node> {
   Running {
     run_token: RunToken,
     generation: Generation,
-    waiters: Option<broadcast::Sender<Result<(N::Item, Generation), N::Error>>>,
+    waiters: OneshotBroadcast<Result<(N::Item, Generation), N::Error>>,
     previous_result: Option<EntryResult<N>>,
     dirty: bool,
   },
@@ -350,7 +350,7 @@ impl<N: Node> Entry<N> {
     }));
 
     EntryState::Running {
-      waiters: None,
+      waiters: OneshotBroadcast::new(),
       run_token,
       generation,
       previous_result,
@@ -380,16 +380,7 @@ impl<N: Node> Entry<N> {
         &mut EntryState::Running {
           ref mut waiters, ..
         } => {
-          let mut rx = if let Some(tx) = waiters {
-            tx.subscribe()
-          } else {
-            let (tx, rx) = broadcast::channel(2);
-            *waiters = Some(tx);
-            rx
-          };
-          return Box::pin(async move { rx.recv().await.map_err(|_| N::Error::invalidated())? })
-            .compat()
-            .to_boxed();
+          waiters.recv().compat().map_err(|_| N::Error::invalidated()).to_boxed()
         }
         &mut EntryState::Completed {
           ref result,
@@ -582,12 +573,7 @@ impl<N: Node> Entry<N> {
           // Notify waiters, and then store the value. The `broadcast::Sender` will return an error
           // if there were no waiters left alive, but that is ok in this case: waiters can go away
           // for any number of reasons.
-          let waiter_count = if let Some(tx) = waiters {
-            tx.send(next_result.as_ref().clone().map(|res| (res, generation)))
-              .unwrap_or(0)
-          } else {
-            0
-          };
+          let waiter_count = waiters.send(next_result.as_ref().clone().map(|res| (res, generation)));
           trace!(
             "Completed node {:?} (generation {:?}) with {} waiters: {:?}",
             self.node,
@@ -759,5 +745,48 @@ impl<N: Node> Entry<N> {
       None => "<None>".to_string(),
     };
     format!("{} == {}", self.node, state).replace("\"", "\\\"")
+  }
+}
+
+/// 
+/// Wraps a tokio::sync::broadcast to implement "one shot" broadcast: ie, to publish exactly one
+/// event to whichever subscribers happen to be present, and to noop if there are no subscribers.
+///
+#[derive(Debug)]
+struct OneshotBroadcast<T>(Option<broadcast::Sender<T>>);
+
+impl<T> OneshotBroadcast<T> where T: Clone {
+  fn new() -> OneshotBroadcast<T> {
+    OneshotBroadcast(None)
+  }
+
+  /// 
+  /// Send the given value to all current subscribers, and clear the list of subscribers.
+  ///
+  /// Returns the number of recipients.
+  ///
+  fn send(&mut self, t: T) -> usize {
+    if let Some(tx) = self.0.take() {
+      // The `broadcast::Sender` will error if there were no subscribers, but that is ok in this
+      // case: subscribers can go away for any number of reasons.
+      tx.send(t).unwrap_or(0)
+    } else {
+      0
+    }
+  }
+
+  ///
+  /// Return a future that will receive the next broadcasted value, or an error if the sender
+  /// dropped the broadcast.
+  ///
+  fn recv(&mut self) -> impl std::future::Future<Output=Result<T, ...>> {
+    let mut rx = if let Some(ref tx) = self.0 {
+      tx.subscribe()
+    } else {
+      let (tx, rx) = broadcast::channel(2);
+      self.0 = Some(tx);
+      rx
+    };
+    async move { rx.recv().await }
   }
 }
