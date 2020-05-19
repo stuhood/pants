@@ -886,8 +886,10 @@ pub extern "C" fn session_create(
     .to_string()
     .expect("build_id was not a valid UTF-8 string");
   with_scheduler(scheduler_ptr, |scheduler| {
+    let executor = scheduler.core.executor.clone();
     Box::into_raw(Box::new(Session::new(
       scheduler,
+      executor,
       should_record_zipkin_spans,
       should_render_ui,
       build_id,

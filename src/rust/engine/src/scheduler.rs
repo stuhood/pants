@@ -69,6 +69,7 @@ pub struct Session(Arc<InnerSession>);
 impl Session {
   pub fn new(
     scheduler: &Scheduler,
+    executor: Executor,
     should_record_zipkin_spans: bool,
     should_render_ui: bool,
     build_id: String,
@@ -76,7 +77,7 @@ impl Session {
   ) -> Session {
     let workunit_store = WorkunitStore::new();
     let display = if should_render_ui {
-      Some(Mutex::new(ConsoleUI::new(workunit_store.clone())))
+      Some(Mutex::new(ConsoleUI::new(workunit_store.clone(), executor)))
     } else {
       None
     };
@@ -192,8 +193,13 @@ impl Session {
 
   async fn maybe_display_teardown(&self) {
     if let Some(display) = &self.0.display {
-      let mut display = display.lock();
-      display.teardown()
+      let teardown = {
+        let mut display = display.lock();
+        display.teardown()
+      };
+      if let Err(e) = teardown.await {
+        warn!("{}", e);
+      }
     }
   }
 
