@@ -64,6 +64,7 @@ use std::time::Duration;
 use tempfile::TempDir;
 use tokio;
 use workunit_store::{Workunit, WorkunitState};
+use task_executor::Executor;
 
 #[cfg(test)]
 mod tests;
@@ -1353,10 +1354,16 @@ pub extern "C" fn write_log(msg: *const raw::c_char, level: u64, target: *const 
 }
 
 #[no_mangle]
-pub extern "C" fn write_stdout(session_ptr: *mut Session, msg: *const raw::c_char) {
-  with_session(session_ptr, |session| {
-    let message_str = unsafe { CStr::from_ptr(msg).to_string_lossy() };
-    session.write_stdout(&message_str);
+pub extern "C" fn write_stdout(scheduler_ptr: *mut Scheduler, session_ptr: *mut Session, msg: *const raw::c_char) {
+  with_scheduler(scheduler_ptr, |scheduler| {
+    with_session(session_ptr, |session| {
+      let message_str = unsafe { CStr::from_ptr(msg).to_string_lossy() };
+      let executor = scheduler.core.executor.clone();
+      match block_in_place_and_block_on(executor, session.write_stdout(&message_str)) {
+        Ok(()) => (),
+        Err(e) => println!("ERROR: {}", e),
+      };
+    })
   });
 }
 
@@ -1398,6 +1405,10 @@ unsafe fn str_ptr_to_string(ptr: *const raw::c_char) -> String {
 ///
 fn block_in_place_and_wait<T, E>(f: impl Future<Item = T, Error = E>) -> Result<T, E> {
   tokio::task::block_in_place(|| f.wait())
+}
+
+fn block_in_place_and_block_on<T, E>(executor: Executor, f: impl std::future::Future<Output = Result<T, E>>) -> Result<T, E> {
+  tokio::task::block_in_place(|| executor.block_on(f))
 }
 
 ///

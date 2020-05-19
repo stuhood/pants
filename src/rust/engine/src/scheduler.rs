@@ -146,12 +146,13 @@ impl Session {
     *run_id = Uuid::new_v4();
   }
 
-  pub fn write_stdout(&self, msg: &str) {
+  pub async fn write_stdout(&self, msg: &str) -> Result<(), String> {
     if let Some(display) = &self.0.display {
       let mut display = display.lock();
-      display.write_stdout(msg);
+      display.write_stdout(msg).await
     } else {
       print!("{}", msg);
+      Ok(())
     }
   }
 

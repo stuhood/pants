@@ -71,15 +71,12 @@ impl ConsoleUI {
     Duration::from_millis(1000 / Self::render_rate_hz())
   }
 
-  pub fn write_stdout(&mut self, msg: &str) {
+  pub async fn write_stdout(&mut self, msg: &str) -> Result<(), String> {
     if self.instance.is_some() {
-      let executor = self.executor.clone();
-      match executor.block_on(self.teardown()) {
-        Ok(()) => (),
-        Err(e) => println!("Error tearing down console: {}", e),
-      };
+      self.teardown().await?;
     }
     print!("{}", msg);
+    Ok(())
   }
 
   pub fn write_stderr(&self, msg: &str) {

@@ -898,8 +898,8 @@ class Native(metaclass=SingletonMetaclass):
         """Proxy a log message to the Rust logging faculties."""
         return self.lib.write_log(msg.encode(), level, target.encode())
 
-    def write_stdout(self, session, msg: str):
-        return self.lib.write_stdout(session, msg.encode())
+    def write_stdout(self, scheduler, session, msg: str):
+        return self.lib.write_stdout(scheduler, session, msg.encode())
 
     def write_stderr(self, session, msg: str):
         return self.lib.write_stderr(session, msg.encode())
