@@ -45,7 +45,6 @@ use engine::{
 };
 
 use futures::future::FutureExt;
-use futures::compat::Future01CompatExt;
 use futures::future::{self as future03, TryFutureExt};
 use futures01::{future, Future};
 use hashing::{Digest, EMPTY_DIGEST};
@@ -67,7 +66,6 @@ use std::time::Duration;
 use tempfile::TempDir;
 use tokio;
 use workunit_store::{Workunit, WorkunitState};
-use task_executor::Executor;
 
 #[cfg(test)]
 mod tests;
@@ -1357,14 +1355,14 @@ pub extern "C" fn write_log(msg: *const raw::c_char, level: u64, target: *const 
 }
 
 #[no_mangle]
-pub extern "C" fn write_stdout(scheduler_ptr: *mut Scheduler, session_ptr: *mut Session, msg: *const raw::c_char) {
+pub extern "C" fn write_stdout(scheduler_ptr: *mut Scheduler, session_ptr: *mut Session, msg: *const raw::c_char) -> PyResult {
   with_scheduler(scheduler_ptr, |scheduler| {
     with_session(session_ptr, |session| {
       let message_str = unsafe { CStr::from_ptr(msg).to_string_lossy() };
       let _executor = scheduler.core.executor.clone();
-      block_in_place_and_wait(session.write_stdout(&message_str).boxed().compat());
+      block_in_place_and_wait(session.write_stdout(&message_str).boxed_local().compat()).into()
     })
-  });
+  })
 }
 
 #[no_mangle]
@@ -1405,10 +1403,6 @@ unsafe fn str_ptr_to_string(ptr: *const raw::c_char) -> String {
 ///
 fn block_in_place_and_wait<T, E>(f: impl Future<Item = T, Error = E>) -> Result<T, E> {
   tokio::task::block_in_place(|| f.wait())
-}
-
-fn block_in_place_and_block_on<T, E>(executor: Executor, f: impl std::future::Future<Output = Result<T, E>>) -> Result<T, E> {
-  tokio::task::block_in_place(|| executor.block_on(f))
 }
 
 ///
