@@ -148,8 +148,11 @@ impl Session {
 
   pub async fn write_stdout(&self, msg: &str) -> Result<(), String> {
     if let Some(display) = &self.0.display {
-      let mut display = display.lock();
-      display.write_stdout(msg).await
+      let write = {
+        let mut display = display.lock();
+        display.write_stdout(msg)
+      };
+      write.await
     } else {
       print!("{}", msg);
       Ok(())

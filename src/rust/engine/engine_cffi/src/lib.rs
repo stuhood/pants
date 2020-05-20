@@ -43,6 +43,9 @@ use engine::{
   externs, nodes, Core, ExecutionRequest, ExecutionTermination, Failure, Function, Handle,
   Intrinsics, Key, Params, Rule, Scheduler, Session, Tasks, TypeId, Types, Value,
 };
+
+use futures::future::FutureExt;
+use futures::compat::Future01CompatExt;
 use futures::future::{self as future03, TryFutureExt};
 use futures01::{future, Future};
 use hashing::{Digest, EMPTY_DIGEST};
@@ -1358,11 +1361,8 @@ pub extern "C" fn write_stdout(scheduler_ptr: *mut Scheduler, session_ptr: *mut 
   with_scheduler(scheduler_ptr, |scheduler| {
     with_session(session_ptr, |session| {
       let message_str = unsafe { CStr::from_ptr(msg).to_string_lossy() };
-      let executor = scheduler.core.executor.clone();
-      match block_in_place_and_block_on(executor, session.write_stdout(&message_str)) {
-        Ok(()) => (),
-        Err(e) => println!("ERROR: {}", e),
-      };
+      let _executor = scheduler.core.executor.clone();
+      block_in_place_and_wait(session.write_stdout(&message_str).boxed().compat());
     })
   });
 }
