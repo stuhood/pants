@@ -31,12 +31,14 @@ impl rule_graph::DisplayForGraph for Rule {
           task_name,
           clause_portion,
           product,
-          get_portion,
+          // NB: We do not render gets on each Node: instead, the RuleGraph will render information
+          // about our dependencies on each dependency edge.
+          ..
         } = Self::extract_task_elements(task, visualization_params);
 
         format!(
-          "@{}({}) -> {}{}\n{}",
-          rule_type, clause_portion, product, get_portion, task_name,
+          "@{}({}) -> {}\n{}",
+          rule_type, clause_portion, product, task_name,
         )
       }
       Rule::Intrinsic(ref intrinsic) => format!(

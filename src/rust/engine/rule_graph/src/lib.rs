@@ -828,18 +828,24 @@ impl DisplayForGraph for Palette {
 
 ///
 /// Apply coloration to several nodes.
+///
 pub fn entry_node_str_with_attrs<R: Rule>(entry: &Entry<R>) -> GraphVizEntryWithAttrs {
   let (entry_str, attrs_str) = match entry {
     &Entry::WithDeps(ref e) => (
       entry_with_deps_str(e),
-      // Color "singleton" entries (with no params)!
-      if e.params().is_empty() {
-        Some(Palette::Olive.fmt_for_graph())
-      } else if let Some(color) = e.rule().and_then(|r| r.color()) {
-        // Color "intrinsic" entries (provided by the rust codebase)!
-        Some(color.fmt_for_graph())
-      } else {
-        None
+      match e {
+        EntryWithDeps::Inner(_) => {
+          // Color "singleton" entries (with no params)!
+          if e.params().is_empty() {
+            Some(Palette::Olive.fmt_for_graph())
+          } else if let Some(color) = e.rule().and_then(|r| r.color()) {
+            // Color "intrinsic" entries (provided by the rust codebase)!
+            Some(color.fmt_for_graph())
+          } else {
+            None
+          }
+        }
+        EntryWithDeps::Root(_) => Some(Palette::Blue.fmt_for_graph()),
       },
     ),
     &Entry::Param(type_id) => (
@@ -1119,33 +1125,27 @@ impl<R: Rule> RuleGraph<R> {
     let mut root_rule_strs = self
       .rule_dependency_edges
       .iter()
-      .filter_map(|(k, deps)| match k {
+      .filter_map(|(node, deps)| match node {
         EntryWithDeps::Root(_) => {
-          let root_str = entry_with_deps_str(k);
-          let mut dep_entries = deps
-            .all_dependencies()
-            .map(|d| entry_node_str_with_attrs(d))
-            .collect::<Vec<_>>();
-          dep_entries.sort();
-          let deps_with_attrs = dep_entries
+          let entry_with_attrs = entry_node_str_with_attrs(&Entry::WithDeps(node.clone()));
+          let mut edges = deps
+            .dependencies
             .iter()
-            .cloned()
-            .filter(|d| d.attrs_str.is_some())
-            .map(|d| format!("\"{}\" {}", d.entry_str, d.attrs_str.unwrap()))
-            .collect::<Vec<String>>()
-            .join("\n");
+            .map(|(key, d)| {
+              format!(
+                "\"{}\" -> \"{}\" [label=\"{}\"]",
+                entry_with_attrs.entry_str,
+                entry_str(&d[0]),
+                key
+              )
+            })
+            .collect::<Vec<_>>();
+          edges.sort();
           Some(format!(
-            "    \"{}\" {}\n{}    \"{}\" -> {{{}}}",
-            root_str,
-            Palette::Blue.fmt_for_graph(),
-            deps_with_attrs,
-            root_str,
-            dep_entries
-              .iter()
-              .cloned()
-              .map(|d| format!("\"{}\"", d.entry_str))
-              .collect::<Vec<String>>()
-              .join(" ")
+            "  \"{}\" {}\n{}",
+            entry_with_attrs.entry_str,
+            entry_with_attrs.attrs_str.as_deref().unwrap_or(""),
+            edges.into_iter().collect::<Vec<_>>().join("\n"),
           ))
         }
         _ => None,
@@ -1158,30 +1158,27 @@ impl<R: Rule> RuleGraph<R> {
     let mut internal_rule_strs = self
       .rule_dependency_edges
       .iter()
-      .filter_map(|(k, deps)| match k {
+      .filter_map(|(node, deps)| match node {
         &EntryWithDeps::Inner(_) => {
-          let mut dep_entries = deps
-            .all_dependencies()
-            .map(|d| entry_node_str_with_attrs(d))
-            .collect::<Vec<_>>();
-          dep_entries.sort();
-          let deps_with_attrs = dep_entries
+          let entry_with_attrs = entry_node_str_with_attrs(&Entry::WithDeps(node.clone()));
+          let mut edges = deps
+            .dependencies
             .iter()
-            .cloned()
-            .filter(|d| d.attrs_str.is_some())
-            .map(|d| format!("\"{}\" {}", d.entry_str, d.attrs_str.unwrap()))
-            .collect::<Vec<String>>()
-            .join("\n");
+            .map(|(key, d)| {
+              format!(
+                "\"{}\" -> \"{}\" [label=\"{}\"]",
+                entry_with_attrs.entry_str,
+                entry_str(&d[0]),
+                key
+              )
+            })
+            .collect::<Vec<_>>();
+          edges.sort();
           Some(format!(
-            "{}    \"{}\" -> {{{}}}",
-            deps_with_attrs,
-            entry_with_deps_str(k),
-            dep_entries
-              .iter()
-              .cloned()
-              .map(|d| format!("\"{}\"", d.entry_str))
-              .collect::<Vec<String>>()
-              .join(" "),
+            "  \"{}\" {}\n{}",
+            entry_with_attrs.entry_str,
+            entry_with_attrs.attrs_str.as_deref().unwrap_or(""),
+            edges.into_iter().collect::<Vec<_>>().join("\n"),
           ))
         }
         _ => None,
