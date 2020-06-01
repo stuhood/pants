@@ -85,8 +85,13 @@ async def setup(
     black: Black,
     python_setup: PythonSetup,
     subprocess_encoding_environment: SubprocessEncodingEnvironment,
+    source_files_for_all_source_files_request: Getter[[AllSourceFilesRequest], SourceFiles],
+    snapshot_for_pathglobs: Getter[[PathGlobs], Snapshot],
+    pex_for_pex_request: Getter[[PexRequest], Pex],
+    source_files_for_specified_source_files_request: Getter[[SpecifiedSourceFilesRequest], SourceFiles],
+    digest_for_merge_digests: Getter[[MergeDigests], Digest],
 ) -> Setup:
-    requirements_pex_request = Get[Pex](
+    requirements_pex_request = pex_for_pex_request(
         PexRequest(
             output_filename="black.pex",
             requirements=PexRequirements(black.get_requirement_specs()),
@@ -98,7 +103,7 @@ async def setup(
     )
 
     config_path: Optional[str] = black.options.config
-    config_snapshot_request = Get[Snapshot](
+    config_snapshot_request = snapshot_for_pathglobs(
         PathGlobs(
             globs=[config_path] if config_path else [],
             glob_match_error_behavior=GlobMatchErrorBehavior.error,
@@ -106,10 +111,10 @@ async def setup(
         )
     )
 
-    all_source_files_request = Get[SourceFiles](
+    all_source_files_request = source_files_for_all_source_files_request(
         AllSourceFilesRequest(field_set.sources for field_set in setup_request.request.field_sets)
     )
-    specified_source_files_request = Get[SourceFiles](
+    specified_source_files_request = source_files_for_specified_source_files_request(
         SpecifiedSourceFilesRequest(
             (field_set.sources, field_set.origin) for field_set in setup_request.request.field_sets
         )
@@ -127,7 +132,7 @@ async def setup(
         else setup_request.request.prior_formatter_result
     )
 
-    input_digest = await Get[Digest](
+    input_digest = digest_for_merge_digests(
         MergeDigests(
             (all_source_files_snapshot.digest, requirements_pex.digest, config_snapshot.digest)
         )
