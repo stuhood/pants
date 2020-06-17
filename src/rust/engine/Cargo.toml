@@ -82,25 +82,14 @@ default-members = [
   "workunit_store"
 ]
 
-[lib]
-crate-type = ["cdylib"]
-
-[features]
-# NB: To actually load this crate from python, the `extension-module` feature must be enabled. But
-# unfortunately, enabling `extension-module` causes tests linked against `cpython` to fail. We
-# define a feature to enable that, but we do not enable it by default: someone building this module
-# in order to extract `libengine.so` should pass `cargo build .. --features=extension-module`.
-#  see https://github.com/PyO3/pyo3/issues/340
-extension-module = ["cpython/extension-module"]
-default = []
-
 [dependencies]
 async_semaphore = { path = "async_semaphore" }
 async-trait = "0.1"
 boxfuture = { path = "boxfuture" }
 bytes = "0.4.5"
 concrete_time = { path = "concrete_time" }
-cpython = "0.5"
+# NB: We set `no-auto-initialize` because pyembed handles initialization.
+cpython = { version = "0.5", features = ["no-auto-initialize"] }
 crossbeam-channel = "0.3"
 fnv = "1.0.5"
 fs = { path = "fs" }
@@ -117,6 +106,9 @@ nailgun = { path = "nailgun" }
 num_enum = "0.4"
 parking_lot = "0.6"
 process_execution = { path = "process_execution" }
+# NB: Running in pyoxidizer-exe mode causes the pyoxidizer.bzl file to be consumed as part of the
+# pyembed build script.
+pyembed = { version = "0.7", default-features = false, features = ["build-mode-pyoxidizer-exe", "jemalloc"] }
 rand = "0.6"
 reqwest = { version = "0.10", default_features = false, features = ["stream", "rustls-tls"] }
 rule_graph = { path = "rule_graph" }

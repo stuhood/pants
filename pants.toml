@@ -67,6 +67,7 @@ pants_ignore.add = [
   "/build-support/bin/native/src",
   # We shouldn't walk or watch the rust compiler artifacts because it is slow.
   "/src/rust/engine/target",
+  "/src/rust/engine/pyembed-gen",
   # We want to .gitignore Java .class files, but pants should pay attention to them.
   "!*.class",
   # We also want to override the .gitignore'd pants.pex file
