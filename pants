@@ -52,11 +52,6 @@ fi
 # shellcheck source=build-support/pants_venv
 source "${HERE}/build-support/pants_venv"
 
-# Exposes:
-# + bootstrap_native_code: Builds target-specific native engine binaries.
-# shellcheck source=build-support/bin/native/bootstrap_code.sh
-source "${HERE}/build-support/bin/native/bootstrap_code.sh"
-
 export PY="${PY:-python3}"
 
 PANTS_EXE="${HERE}/src/python/pants/bin/pants_loader.py"
@@ -86,9 +81,9 @@ PANTS_SRCPATH_STR="$(echo "${PANTS_SRCPATH[@]}" | tr ' ' :)"
 function exec_pants_bare() {
   # Redirect activation and native bootstrap to ensure that they don't interfere with stdout.
   activate_pants_venv 1>&2
-  bootstrap_native_code 1>&2
+  # TODO: Not using MODE here.
   PYTHONPATH="${PANTS_SRCPATH_STR}:${PYTHONPATH}" RUNNING_PANTS_FROM_SOURCES=1 \
-    exec python "${PANTS_EXE}" "$@"
+    build-support/bin/native/cargo run --manifest-path=src/rust/engine/Cargo.toml -- "$@"
 }
 
 if [[ -n "${WRAPPER_REQUIREMENTS}" ]]; then

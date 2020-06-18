@@ -17,16 +17,7 @@ export PYTHON_SYS_EXECUTABLE="${PY}"
 # shellcheck source=build-support/bin/native/bootstrap_rust.sh
 source "${REPO_ROOT}/build-support/bin/native/bootstrap_rust.sh"
 
-# Exposes:
-# + activate_pants_venv: Activate a virtualenv for pants requirements, creating it if needed.
-#
-# This is necessary for any `cpython`-dependent crates, which need a python interpeter on the PATH.
-# shellcheck source=build-support/pants_venv
-source "${REPO_ROOT}/build-support/pants_venv"
-
 bootstrap_rust >&2
-
-activate_pants_venv
 
 download_binary="${REPO_ROOT}/build-support/bin/download_binary.sh"
 
@@ -43,30 +34,6 @@ PATH="${cmakeroot}/bin:${goroot}/bin:${CARGO_HOME}/bin:$(dirname "${protoc}"):${
 export PATH
 export PROTOC="${protoc}"
 
-# We implicitly pull in `ar` to create libnative_engine_ffi.a from native_engine.o via the `cc`
-# crate in engine_cffi/build.rs.
-case "$(uname)" in
-  "Darwin")
-    # The homebrew version of the `ar` tool appears to "sometimes" create libnative_engine_ffi.a
-    # instances which aren't recognized as Mach-O x86-64 binaries when first on the PATH. This
-    # causes a silent linking error at build time due to the use of the `-undefined dynamic_lookup`
-    # flag, which then becomes:
-    # "Symbol not found: _wrapped_PyInit_native_engine"
-    # when attempting to import the native engine library in native.py.
-    # NB: This line uses the version of `ar` provided by OSX itself, which avoids the linking error.
-    export AR='/usr/bin/ar'
-    ;;
-  "Linux")
-    # While the linking error when consuming libnative_engine_ffi.a does not repro on Linux, since
-    # we have a reliable version of `ar` available from the pantsbuild s3, we might as well use it.
-    binutils="$("${download_binary}" "binutils" "2.30" "binutils.tar.gz")"
-    export AR="${binutils}/bin/ar"
-    ;;
-  *)
-    die "Unknown platform: uname was $(uname)"
-    ;;
-esac
-
 cargo_bin="${CARGO_HOME}/bin/cargo"
 
 if [[ -n "${CARGO_WRAPPER_DEBUG}" ]]; then
@@ -76,7 +43,6 @@ if [[ -n "${CARGO_WRAPPER_DEBUG}" ]]; then
 >>>   GOROOT=${GOROOT}
 >>>   PATH=${PATH}
 >>>   PROTOC=${PROTOC}
->>>   AR=${AR:-<not explicitly set>}
 >>>
 DEBUG
 fi

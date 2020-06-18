@@ -117,7 +117,6 @@ python_library(
   name='native',
   sources=['native.py'],
   dependencies=[
-    ':native_engine_so',
     '3rdparty/python:setuptools',
     '3rdparty/python:typing-extensions',
     'src/python/pants/base:exiter',
@@ -134,11 +133,6 @@ python_library(
     'src/python/pants/util:meta',
   ],
   tags = {"partially_type_checked"},
-)
-
-resources(
-  name='native_engine_so',
-  sources=['native_engine.so'],
 )
 
 python_library(

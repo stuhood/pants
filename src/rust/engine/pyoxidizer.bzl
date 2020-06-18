@@ -65,8 +65,13 @@ def make_exe(dist):
     # resources, and other options. The returned object represents the
     # standalone executable that will be built.
     exe = dist.to_python_executable(
-        name="engine",
+        name='engine',
         config=python_config,
+
+        # Pants has native dependencies (at least `mypy` and `levenshtein`), which mean that we
+        # can't use the default in-memory-only policy.
+        resources_policy='prefer-in-memory-fallback-filesystem-relative:todo-a-lib-directory',
+
         # Embed all extension modules, making this a fully-featured Python.
         #extension_module_filter='all',
 
@@ -104,9 +109,10 @@ def make_exe(dist):
 
     # Invoke `pip install` using a requirements file and add the collected resources
     # to our binary.
-    #exe.add_in_memory_python_resources(dist.pip_install(["-r", "requirements.txt"]))
-
-    
+    # TODO: This is redundant with pants' venv... but perhaps we could remove it?
+    exe.add_python_resources(
+        dist.pip_install(["-r", CWD + "/../../../3rdparty/python/requirements.txt"])
+    )
 
     # Read Python files from a local directory and add them to our embedded
     # context, taking just the resources belonging to the listed Python packages.

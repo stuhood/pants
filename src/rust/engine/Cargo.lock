@@ -695,7 +695,7 @@ dependencies = [
  "num_enum 0.4.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "parking_lot 0.6.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "process_execution 0.0.1",
- "pyembed 0.7.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "pyembed 0.7.0",
  "rand 0.6.5 (registry+https://github.com/rust-lang/crates.io-index)",
  "reqwest 0.10.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "rule_graph 0.0.1",
@@ -2171,7 +2171,6 @@ dependencies = [
 [[package]]
 name = "pyembed"
 version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
 dependencies = [
  "anyhow 1.0.31 (registry+https://github.com/rust-lang/crates.io-index)",
  "cpython 0.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -3801,7 +3800,6 @@ dependencies = [
 "checksum protobuf-codegen 2.0.6 (registry+https://github.com/rust-lang/crates.io-index)" = "c12a571137dc99703cb46fa21f185834fc5578a65836573fcff127f7b53f41e1"
 "checksum protoc 2.10.2 (registry+https://github.com/rust-lang/crates.io-index)" = "8f89b56360a99c36ff8dcf7cc969b291fbae680b027e768bfd27110606f45271"
 "checksum protoc-grpcio 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)" = "b0292d93a536174ff6bafe8b5e8534aeeb2b039146bae59770c07f4d2c2458c9"
-"checksum pyembed 0.7.0 (registry+https://github.com/rust-lang/crates.io-index)" = "bdec5734583d93369dd70d1f83a2f9ff1454c8b868726ec8f979271083a4e4b7"
 "checksum python-packed-resources 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)" = "2fff351d727c9d63425600300500897cc64a7359cd22027ff46bc1e8d5ed86ca"
 "checksum python3-sys 0.5.0 (registry+https://github.com/rust-lang/crates.io-index)" = "968ddca15e0fa74da3207aeb7b9fbbe94864dd13a17eaa95f75b5b836abf3007"
 "checksum quick-error 1.2.3 (registry+https://github.com/rust-lang/crates.io-index)" = "a1d01941d82fa2ab50be1e79e6714289dd7cde78eba4c074bc5a4374f650dfe0"
