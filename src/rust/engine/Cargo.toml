@@ -107,7 +107,8 @@ num_enum = "0.4"
 parking_lot = "0.6"
 process_execution = { path = "process_execution" }
 # NB: Running in pyoxidizer-exe mode causes the pyoxidizer.bzl file to be consumed as part of the
-# pyembed build script.
+# pyembed build script by calling a `pyoxidizer` binary installed in our cargo.
+#   see build-support/bin/native/bootstrap_rust.sh
 pyembed = { path = "/Users/stuhood/src/PyOxidizer/pyembed", default-features = false, features = ["build-mode-pyoxidizer-exe", "jemalloc"] }
 rand = "0.6"
 reqwest = { version = "0.10", default_features = false, features = ["stream", "rustls-tls"] }

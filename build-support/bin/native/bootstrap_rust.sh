@@ -57,10 +57,12 @@ function bootstrap_rust() {
     ln -fs "${symlink_target}" "${rust_toolchain_root}/${cargo_versioned}"
   fi
 
-  if [[ ! -x "${CARGO_HOME}/bin/cargo-ensure-installed" ]]; then
-    "${cargo}" install cargo-ensure-installed
+  # TODO: pyoxidizer needs to be installed globally in order to be used
+  # via `build-mode-pyoxidizer-exe`. See `src/rust/engine/Cargo.toml`.
+  # TODO: We install in debug mode because this is a heavy dependency.
+  if ! "${cargo}" install --list | grep -q "pyoxidizer v0.7.0"; then
+    "${cargo}" install --force --debug --version 0.7.0 pyoxidizer
   fi
-  "${cargo}" ensure-installed --package cargo-ensure-installed --version 0.2.1
 
   local -r symlink_farm_root="${REPO_ROOT}/build-support/bin/native"
   if [[ ! -x "${symlink_farm_root}/.${cargo_versioned}" ]]; then
