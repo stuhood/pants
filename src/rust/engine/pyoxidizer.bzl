@@ -109,12 +109,11 @@ def make_exe(dist):
     
 
     # Read Python files from a local directory and add them to our embedded
-    # context, taking just the resources belonging to the `foo` and `bar`
-    # Python packages.
-    #exe.add_in_memory_python_resources(dist.read_package_root(
-    #    path="/src/mypackage",
-    #    packages=["foo", "bar"],
-    #))
+    # context, taking just the resources belonging to the listed Python packages.
+    exe.add_in_memory_python_resources(dist.read_package_root(
+        path=CWD + "/../../../src/python",
+        packages=["pants", "pants.bin", "pants.bin.pants_loader"],
+    ))
 
     # Discover Python files from a virtualenv and add them to our embedded
     # context.
