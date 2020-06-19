@@ -27,9 +27,26 @@
 // Arc<Mutex> can be more clear than needing to grok Orderings:
 #![allow(clippy::mutex_atomic)]
 
+use std::env;
+use std::path::PathBuf;
+
+/// In order to allow `cargo run` to work directly, we move the thirdparty resources that are
+/// produced by the `FileManifest.install` call in `pyoxidizer.bzl` to the location where they
+/// expected to live.
+fn move_requirements() {
+  let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+  let profile = env::var("PROFILE").unwrap();
+  let requirements_src = manifest_dir.join("pyembed-gen").join("requirements").join("thirdparty_requirements");
+  let requirements_dst = manifest_dir.join("target").join(profile).join("thirdparty_requirements");
+  let _ = std::fs::remove_file(&requirements_dst);
+  std::os::unix::fs::symlink(&requirements_src, &requirements_dst).unwrap();
+}
+
 fn main() {
+  move_requirements();
+
   // Initialize the pyembed crate.
-  if let Ok(config_rs) = std::env::var("DEP_PYTHONXY_DEFAULT_PYTHON_CONFIG_RS") {
+  if let Ok(config_rs) = env::var("DEP_PYTHONXY_DEFAULT_PYTHON_CONFIG_RS") {
     println!(
       "cargo:rustc-env=PYOXIDIZER_DEFAULT_PYTHON_CONFIG_RS={}",
       config_rs

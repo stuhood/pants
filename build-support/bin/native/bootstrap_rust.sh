@@ -60,9 +60,11 @@ function bootstrap_rust() {
   # TODO: pyoxidizer needs to be installed globally in order to be used
   # via `build-mode-pyoxidizer-exe`. See `src/rust/engine/Cargo.toml`.
   # TODO: We install in debug mode because this is a heavy dependency.
-  if ! "${cargo}" install --list | grep -q "pyoxidizer v0.7.0"; then
-    "${cargo}" install --force --debug --version 0.7.0 pyoxidizer
-  fi
+  #if ! "${cargo}" install --list | grep -q "pyoxidizer v0.7.0"; then
+  #  "${cargo}" install --force --debug --version 0.7.0 pyoxidizer
+  #fi
+  # TODO: for a source install
+  #"${cargo}" install --force --debug --path /Users/stuhood/src/PyOxidizer/pyoxidizer pyoxidizer
 
   local -r symlink_farm_root="${REPO_ROOT}/build-support/bin/native"
   if [[ ! -x "${symlink_farm_root}/.${cargo_versioned}" ]]; then

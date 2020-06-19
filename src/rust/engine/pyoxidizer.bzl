@@ -44,7 +44,7 @@ def make_exe(dist):
     #     verbose=0,
     #     write_modules_directory_env=None,
     #     run_eval=None,
-    run_module='pants.bin.pants_loader:main',
+    run_module='pants.bin.pants_loader',
     #     run_noop=False,
     #     run_repl=True,
     )
@@ -70,7 +70,7 @@ def make_exe(dist):
 
         # Pants has native dependencies (at least `mypy` and `levenshtein`), which mean that we
         # can't use the default in-memory-only policy.
-        resources_policy='prefer-in-memory-fallback-filesystem-relative:todo-a-lib-directory',
+        resources_policy='prefer-in-memory-fallback-filesystem-relative:thirdparty_requirements',
 
         # Embed all extension modules, making this a fully-featured Python.
         #extension_module_filter='all',
@@ -95,7 +95,7 @@ def make_exe(dist):
         include_sources=True,
 
         # Whether to include non-module resource data/files.
-        include_resources=False,
+        include_resources=True,
 
         # Do not include functionality for testing Python itself.
         include_test=False,
@@ -110,15 +110,18 @@ def make_exe(dist):
     # Invoke `pip install` using a requirements file and add the collected resources
     # to our binary.
     # TODO: This is redundant with pants' venv... but perhaps we could remove it?
-    exe.add_python_resources(
-        dist.pip_install(["-r", CWD + "/../../../3rdparty/python/requirements.txt"])
-    )
+    files = FileManifest()
+    for resource in dist.pip_install(["-r", CWD + "/../../../3rdparty/python/requirements.txt"]):
+        exe.add_python_resource(resource)
+        if type(resource) == "PythonExtensionModule":
+            files.add_python_resource("thirdparty_requirements", resource)
+    files.install("requirements")
 
     # Read Python files from a local directory and add them to our embedded
     # context, taking just the resources belonging to the listed Python packages.
     exe.add_in_memory_python_resources(dist.read_package_root(
         path=CWD + "/../../../src/python",
-        packages=["pants", "pants.bin", "pants.bin.pants_loader"],
+        packages=["pants"],
     ))
 
     # Discover Python files from a virtualenv and add them to our embedded
