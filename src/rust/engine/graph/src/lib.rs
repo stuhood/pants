@@ -417,7 +417,7 @@ impl<N: Node> InnerGraph<N> {
 
     // Dirty transitive entries, but do not yet clear their output edges. We wait to clear
     // outbound edges until we decide whether we can clean an entry: if we can, all edges are
-    // preserved; if we can't, they are cleared in `Graph::clear_stale_edges`.
+    // preserved; if we can't, they are eventually cleaned in `Graph::garbage_collect_edges`.
     for id in &transitive_ids {
       if let Some(mut entry) = self.pg.node_weight_mut(*id).cloned() {
         entry.dirty(self);
@@ -704,10 +704,22 @@ impl<N: Node> Graph<N> {
   }
 
   ///
-  /// Return the value of the given Node. Synonym for `self.get(context, node)`.
+  /// Return the value of the given Node. This is a synonym for `self.get(context, node)`, but it
+  /// is expected to be used by callers requesting node values from the graph, while `self.get` is
+  /// also used by Nodes to request dependencies..
   ///
   pub async fn create(&self, node: N, context: &N::Context) -> Result<N::Item, N::Error> {
-    self.get(context, node).await
+    let result = self.get(context, node).await;
+    // In the background, garbage collect edges.
+    /*
+    context.spawn({
+        let context = context.clone();
+        async move {
+          //context.graph().garbage_collect_edges();
+        }
+    });
+    */
+    result
   }
 
   ///
@@ -764,6 +776,7 @@ impl<N: Node> Graph<N> {
     context: &N::Context,
   ) -> Result<Vec<Generation>, N::Error> {
     let dep_nodes = {
+      // TODO: This needs to ignore dead edges.
       let inner = self.inner.lock();
       inner
         .pg
@@ -797,41 +810,6 @@ impl<N: Node> Graph<N> {
         .filter_map(std::convert::identity)
         .collect(),
     )
-  }
-
-  ///
-  /// Garbage collects the dependency edges of the given EntryId if the RunToken matches.
-  ///
-  fn clear_stale_edges(&self, entry_id: EntryId, run_token: RunToken) {
-    let mut inner = self.inner.lock();
-    // If the RunToken mismatches, return.
-    if let Some(entry) = inner.entry_for_id(entry_id) {
-      if entry.run_token() != run_token {
-        return;
-      }
-    }
-
-    // Collect stale edges.
-    // NB: Because `remove_edge` changes EdgeIndex values, we sort the indices and remove them
-    // back to front to avoid invalidating EdgeIndexes as we go.
-    let descending_stale_edges = {
-      let mut stale_edges = inner
-        .pg
-        .edges_directed(entry_id, Direction::Outgoing)
-        .filter_map(|edge| {
-          if edge.weight().1 == run_token {
-            None
-          } else {
-            Some(edge.id())
-          }
-        })
-        .collect::<Vec<_>>();
-      stale_edges.sort_by(|a, b| a.cmp(b).reverse());
-      stale_edges
-    };
-    for edge in descending_stale_edges {
-      inner.pg.remove_edge(edge);
-    }
   }
 
   ///
@@ -889,6 +867,29 @@ impl<N: Node> Graph<N> {
       result,
       has_uncacheable_deps,
       has_weak_deps,
+    );
+  }
+
+  ///
+  /// Garbage collects all dependency edges that are not associated with the "current" RunToken for
+  /// each Node.
+  ///
+  /// This is executed as a bulk operation, because individual edge removals take O(n), and bulk
+  /// edge filtering is if not more efficient, then at least possible to do asynchronously.
+  ///
+  pub fn garbage_collect_edges(&self) {
+    let mut inner = self.inner.lock();
+    inner.pg = inner.pg.filter_map(
+      |_entry_id, node| Some(node.clone()),
+      |edge_index, edge_weight| {
+        let (edge_src_id, _) = inner.pg.edge_endpoints(edge_index).unwrap();
+        // Clear the the edge if it is not for the "current" run of a Node.
+        if edge_weight.1 == inner.unsafe_entry_for_id(edge_src_id).run_token() {
+            Some(*edge_weight)
+        } else {
+            None
+        }
+      },
     );
   }
 

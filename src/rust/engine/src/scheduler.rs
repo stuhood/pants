@@ -499,6 +499,19 @@ impl Scheduler {
       .core
       .executor
       .block_on(session.maybe_display_teardown());
+    let _join =
+    self
+      .core
+      .executor
+      .spawn_blocking({
+        let core = self.core.clone();
+        move ||{
+          log::info!("Garbage collecting edges...");
+          let start = Instant::now();
+          core.graph.garbage_collect_edges();
+          log::info!("Done in {:?}.", start.elapsed());
+        }
+      });
     result
   }
 

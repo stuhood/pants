@@ -306,9 +306,8 @@ impl<N: Node> Entry<N> {
             true
           }
           _ => {
-            // If dependency generations mismatched or failed to fetch, clear stale edges and
-            // indicate that it should re-run.
-            context.graph().clear_stale_edges(entry_id, run_token);
+            // If dependency generations mismatched or failed to fetch, indicate that the Node
+            // should re-run.
             trace!("Deps did not match: {} needs to re-run.", node);
             false
           }
