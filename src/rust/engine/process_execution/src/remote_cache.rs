@@ -23,39 +23,42 @@ use crate::{
   ProcessMetadata,
 };
 
-/// This `CommandRunner` implementation caches results remotely using the Action Cache service
-/// of the Remote Execution API.
-///
-/// This runner expects to sit between the local cache CommandRunner and the CommandRunner
-/// that is actually executing the Process. Thus, the local cache will be checked first,
-/// then the remote cache, and then execution (local or remote) as necessary if neither cache
-/// has a hit. On the way back out of the stack, the result will be stored remotely and
-/// then locally.
-#[derive(Clone)]
-pub struct CommandRunner {
-  underlying: Arc<dyn crate::CommandRunner>,
-  metadata: ProcessMetadata,
+#[async_trait]
+pub trait Cache: Send + Sync {
+  async fn get(
+    &self,
+    context: &Context,
+    action_digest: Digest,
+    metadata: &ProcessMetadata,
+    platform: Platform,
+  ) -> Result<Option<FallibleProcessResultWithPlatform>, String>;
+
+  /// Stores an execution result into the remote Action Cache.
+  async fn put(
+    &self,
+    context: &Context,
+    request: &Process,
+    result: &FallibleProcessResultWithPlatform,
+    metadata: &ProcessMetadata,
+    command: &Command,
+    action_digest: Digest,
+    command_digest: Digest,
+  ) -> Result<(), String>;
+}
+
+pub struct RemoteCache {
   store: Store,
   action_cache_client: Arc<ActionCacheClient<Channel>>,
-  headers: BTreeMap<String, String>,
-  platform: Platform,
-  cache_read: bool,
-  cache_write: bool,
   eager_fetch: bool,
 }
 
-impl CommandRunner {
+impl RemoteCache {
   pub fn new(
-    underlying: Arc<dyn crate::CommandRunner>,
-    metadata: ProcessMetadata,
     store: Store,
     action_cache_address: &str,
     root_ca_certs: Option<Vec<u8>>,
     oauth_bearer_token: Option<String>,
     mut headers: BTreeMap<String, String>,
-    platform: Platform,
-    cache_read: bool,
-    cache_write: bool,
     eager_fetch: bool,
   ) -> Result<Self, String> {
     let tls_client_config = match root_ca_certs {
@@ -116,15 +119,9 @@ impl CommandRunner {
       })
     });
 
-    Ok(CommandRunner {
-      underlying,
-      metadata,
+    Ok(RemoteCache {
       store,
       action_cache_client,
-      headers,
-      platform,
-      cache_read,
-      cache_write,
       eager_fetch,
     })
   }
@@ -365,9 +362,36 @@ impl CommandRunner {
 
     Ok((action_result, digests.into_iter().collect::<Vec<_>>()))
   }
+}
 
-  /// Stores an execution result into the remote Action Cache.
-  async fn update_action_cache(
+#[async_trait]
+impl Cache for RemoteCache {
+  async fn get(
+    &self,
+    context: &Context,
+    action_digest: Digest,
+    metadata: &ProcessMetadata,
+    platform: Platform,
+  ) -> Result<Option<FallibleProcessResultWithPlatform>, String> {
+    with_workunit(
+      context.workunit_store.clone(),
+      "check_action_cache".to_owned(),
+      WorkunitMetadata::with_level(Level::Debug),
+      crate::remote::check_action_cache(
+        action_digest,
+        metadata,
+        platform,
+        context,
+        self.action_cache_client.clone(),
+        self.store.clone(),
+        self.eager_fetch,
+      ),
+      |_, md| md,
+    )
+    .await
+  }
+
+  async fn put(
     &self,
     context: &Context,
     request: &Process,
@@ -426,6 +450,47 @@ impl CommandRunner {
   }
 }
 
+/// This `CommandRunner` implementation caches results remotely using the Action Cache service
+/// of the Remote Execution API.
+///
+/// This runner expects to sit between the local cache CommandRunner and the CommandRunner
+/// that is actually executing the Process. Thus, the local cache will be checked first,
+/// then the remote cache, and then execution (local or remote) as necessary if neither cache
+/// has a hit. On the way back out of the stack, the result will be stored remotely and
+/// then locally.
+#[derive(Clone)]
+pub struct CommandRunner {
+  cache: Arc<dyn Cache>,
+  underlying: Arc<dyn crate::CommandRunner>,
+  metadata: ProcessMetadata,
+  store: Store,
+  platform: Platform,
+  cache_read: bool,
+  cache_write: bool,
+}
+
+impl CommandRunner {
+  pub fn new(
+    cache: Arc<dyn Cache>,
+    underlying: Arc<dyn crate::CommandRunner>,
+    metadata: ProcessMetadata,
+    store: Store,
+    platform: Platform,
+    cache_read: bool,
+    cache_write: bool,
+  ) -> Result<Self, String> {
+    Ok(CommandRunner {
+      cache,
+      underlying,
+      metadata,
+      store,
+      platform,
+      cache_read,
+      cache_write,
+    })
+  }
+}
+
 #[async_trait]
 impl crate::CommandRunner for CommandRunner {
   async fn run(
@@ -453,22 +518,10 @@ impl crate::CommandRunner for CommandRunner {
     // Check the remote Action Cache to see if this request was already computed.
     // If so, return immediately with the result.
     if self.cache_read {
-      let response = with_workunit(
-        context.workunit_store.clone(),
-        "check_action_cache".to_owned(),
-        WorkunitMetadata::with_level(Level::Debug),
-        crate::remote::check_action_cache(
-          action_digest,
-          &self.metadata,
-          self.platform,
-          &context,
-          self.action_cache_client.clone(),
-          self.store.clone(),
-          self.eager_fetch,
-        ),
-        |_, md| md,
-      )
-      .await;
+      let response = self
+        .cache
+        .get(&context, action_digest, &self.metadata, self.platform)
+        .await;
       match response {
         Ok(cached_response_opt) => {
           log::debug!(
@@ -491,7 +544,8 @@ impl crate::CommandRunner for CommandRunner {
     if result.exit_code == 0 && self.cache_write {
       // Store the result in the remote cache if not the product of a remote execution.
       if let Err(err) = self
-        .update_action_cache(
+        .cache
+        .put(
           &context,
           &request,
           &result,
