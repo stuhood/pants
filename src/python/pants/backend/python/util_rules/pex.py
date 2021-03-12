@@ -468,6 +468,7 @@ async def find_interpreter(
                     """
                 ),
             ),
+            extra_env={"PEX_VERBOSE": "9"},
             level=LogLevel.DEBUG,
             # NB: We want interpreter discovery to re-run fairly frequently (PER_RESTART), but
             # not on every run of Pants (NEVER, which is effectively per-Session). See #10769 for
